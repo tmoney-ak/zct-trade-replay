@@ -96,6 +96,7 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40p
     <div class="stat">Reviewed <b id="s-done">0</b>/<b id="s-total">0</b></div>
     <div class="stat">Take again <b id="s-take">0</b> · Wouldn't <b id="s-skip">0</b></div>
     <button class="ghost" id="to-summary">Summary</button>
+    <button class="ghost" id="restart">Start over</button>
     <button class="ghost" id="to-setup">Load other trades</button>
   </div>
   <div class="progress"><i id="prog"></i></div>
@@ -194,6 +195,7 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40p
       <button class="take" id="x-csv">Export CSV</button>
       <button id="x-json">Export JSON</button>
       <button class="ghost" id="back-review">Back to the trades</button>
+      <button class="ghost" id="restart-2">Start over</button>
     </div>
   </section>
 </main>
@@ -978,6 +980,14 @@ $("b-unavail").onclick = () => { store.decisions[cur] = { unavailable: true, at:
 $("to-summary").onclick = summary;
 $("back-review").onclick = () => show(cur);
 $("to-setup").onclick = showSetup;
+// clear this journal's answers and go back to trade 1 (loaded candles are kept, so it's instant)
+function restart() {
+  if (!TRADES || !confirm("Clear all your answers for these trades and start again from trade 1?")) return;
+  store = { decisions: {}, current: 0 };
+  save(); stats(); show(0);
+}
+$("restart").onclick = restart;
+$("restart-2").onclick = restart;
 $("b-sample").onclick = () => boot(SAMPLE);
 $("b-start").onclick = () => {
   if (!journal) return;
