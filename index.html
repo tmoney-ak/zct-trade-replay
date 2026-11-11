@@ -127,6 +127,7 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40p
           <select id="tz"></select>
         </label>
       </div>
+      <div class="sub" id="tz-note"></div>
       <div id="found" class="found"></div>
       <div class="warn" id="paste-err"></div>
       <div class="btns">
@@ -315,6 +316,16 @@ async function fetchTrade(t) {
     try {
       const bars = await loadFrom(src, b, tf, s, e);
       const ei = bars.findIndex(k => k.t === entryOpen);
+      // a trade on the other side of a daylight-saving change sits an hour off: if the entry and exit
+      // fit an hour either way and not at this offset, move this trade's offset and load it again
+      if (ei > 5 && tf === 1 && !t._dst) {
+        const at = new Map(bars.map(k => [k.t, k])), w0 = parseTime(t.entry_time, 0), x0 = parseTime(t.exit_time, 0);
+        const fits = h => priceFits(at, w0, Number(t.entry), h) && priceFits(at, x0, Number(t.exit), h) !== false;
+        if (!fits(offOf(t))) {
+          const h = [offOf(t) + 1, offOf(t) - 1].find(fits);
+          if (h != null) { t.utc_offset = h; t._dst = true; return fetchTrade(t); }
+        }
+      }
       if (ei > 5) {
         let xi = bars.findIndex(k => k.t === exitOpen);
         if (xi < ei) xi = bars.length - 1;
@@ -571,15 +582,49 @@ function journalFromRows(rows, name) {
 }
 
 // timezone choices: this computer's zone (follows daylight saving per trade), or a fixed offset
+const OFFSETS = [];
+for (let h = -12; h <= 14; h += 0.5) if (!(h % 1) || [-9.5, -3.5, 3.5, 4.5, 5.5, 6.5, 9.5, 10.5].includes(h)) OFFSETS.push(h);
+const utcName = h => "UTC" + (h ? (h < 0 ? "−" : "+") + Math.floor(Math.abs(h)) + (Math.abs(h) % 1 ? ":30" : "") : "");
 function fillTimezones() {
   const zone = (Intl.DateTimeFormat().resolvedOptions().timeZone || "").replace(/_/g, " ");
-  const opts = [`<option value="local">This computer's timezone${zone ? " (" + zone + ")" : ""}</option>`];
-  for (let h = -12; h <= 14; h += 0.5) {
-    if (h % 1 && ![-9.5, -3.5, 3.5, 4.5, 5.5, 6.5, 9.5, 10.5].includes(h)) continue;
-    const sign = h < 0 ? "−" : "+", a = Math.abs(h);
-    opts.push(`<option value="${h}">UTC${h ? sign + Math.floor(a) + (a % 1 ? ":30" : "") : ""}</option>`);
+  $("tz").innerHTML = `<option value="local">This computer's timezone${zone ? " (" + zone + ")" : ""}</option>` +
+    OFFSETS.map(h => `<option value="${h}">${utcName(h)}</option>`).join("");
+}
+
+// does a journal price sit inside the 1-minute candle at that journal time, read at offset h?
+function priceFits(at, wallMs, price, h) {
+  if (wallMs == null || price == null) return null;
+  const k = at.get(Math.floor((wallMs - h * 3600e3) / 6e4) * 6e4);
+  return !!k && price >= k.l * 0.9995 && price <= k.h * 1.0005;
+}
+async function anyBars(coin, s, e) {
+  for (const src of SOURCES) {
+    try { const bars = await loadFrom(src, base(coin), 1, s, e); if (bars.length > 60) return bars; } catch (err) {}
   }
-  $("tz").innerHTML = opts.join("");
+  return null;
+}
+// the journal's timezone, found from the trades themselves: the UTC offset that puts the most entries
+// (and exits) inside the candle at the journal's time, checked on the most recent few trades
+async function detectOffset(trades) {
+  const score = new Map(OFFSETS.map(h => [h, 0]));
+  let checked = 0;
+  for (const t of trades.slice(-4)) {
+    const e0 = parseTime(t.entry_time, 0), x0 = parseTime(t.exit_time, 0);
+    if (e0 == null) continue;
+    const span = x0 && x0 > e0 ? Math.min(x0 - e0, 6 * 3600e3) : 0;
+    const bars = await anyBars(t.coin, Math.floor((e0 - 14.5 * 3600e3) / 6e4) * 6e4, Math.floor((e0 + 12.5 * 3600e3 + span) / 6e4) * 6e4);
+    if (!bars) continue;
+    checked++;
+    const at = new Map(bars.map(k => [k.t, k]));
+    for (const h of OFFSETS) {
+      const a = priceFits(at, e0, t.entry, h), b = priceFits(at, x0, t.exit, h);
+      if (a && b !== false) score.set(h, score.get(h) + 1);
+    }
+  }
+  const local = -new Date().getTimezoneOffset() / 60;
+  // most matches wins; on a tie prefer whole hours, then the offset closest to this computer's
+  const best = [...score].sort((p, q) => q[1] - p[1] || Math.abs(p[0] % 1) - Math.abs(q[0] % 1) || Math.abs(p[0] - local) - Math.abs(q[0] - local))[0];
+  return { offset: best[0], matches: best[1], checked };
 }
 function localOffset(entryTime) {
   const m = entryTime.match(/(\d+)-(\d+)-(\d+) (\d+):(\d+)/);
@@ -595,7 +640,7 @@ function buildData() {
 
 // shared by the link and the file upload: read, report what was found, enable Start
 async function useJournal(read) {
-  $("paste-err").textContent = ""; $("found").textContent = "Reading your journal…"; $("b-start").disabled = true;
+  $("paste-err").textContent = ""; $("found").textContent = "Reading your journal…"; $("tz-note").textContent = ""; $("b-start").disabled = true;
   try {
     journal = await read();
     const n = journal.trades.length;
@@ -604,6 +649,17 @@ async function useJournal(read) {
     $("found").textContent = `Found ${n} closed trade${n === 1 ? "" : "s"} on "${journal.sheet}". You'll replay the last ${used.length}: ` +
       `${used[0].entry_time.slice(0, 10)} to ${used[used.length - 1].entry_time.slice(0, 10)}.`;
     $("b-start").disabled = false;
+    const mine = journal;
+    $("tz-note").textContent = "Working out your journal's timezone from your trades…";
+    detectOffset(used).then(r => {
+      if (journal !== mine) return;
+      if (r.matches) {
+        $("tz").value = String(r.offset);
+        $("tz-note").textContent = `Detected ${utcName(r.offset)}: at that timezone your entry and exit prices match the candles on ${r.matches} of ${r.checked} recent trades. Change it if that's wrong.`;
+      } else {
+        $("tz-note").textContent = "Couldn't work out the timezone from your trades. Choose the one your journal times are in.";
+      }
+    }).catch(() => { $("tz-note").textContent = ""; });
     return true;
   } catch (err) {
     journal = null; $("found").textContent = "";
