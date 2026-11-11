@@ -70,6 +70,11 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40p
 .drop b{color:var(--ink)}.drop:hover,.drop.over{border-color:var(--teal);background:#f2f8f8}
 .drop input{position:absolute;opacity:0;width:1px;height:1px}
 .drop:focus-within{border-color:var(--teal)}
+.linkrow{display:flex;flex-wrap:wrap;gap:10px}
+.linkrow input{flex:1 1 320px;min-width:0;font:inherit;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.linkrow input:focus{outline:none;border-color:var(--teal)}
+.alt summary{cursor:pointer;color:var(--muted);font-size:14px}
+.alt[open] summary{margin-bottom:10px}
 .fields{display:flex;flex-wrap:wrap;gap:12px 24px}
 .fields label{display:grid;gap:4px;font-size:13px;color:var(--muted)}
 .fields input,.fields select{font:inherit;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fff;min-width:220px;max-width:100%}
@@ -100,14 +105,22 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40p
     </div>
     <div class="setup-body">
       <ol class="steps">
-        <li>Open your ZCT Trading Journal in Google Sheets and choose <b>File → Download → Microsoft Excel (.xlsx)</b>.</li>
-        <li>Drop that file below. It stays on your computer: nothing is uploaded.</li>
+        <li>In your ZCT Trading Journal, click <b>Share</b> and set General access to <b>Anyone with the link · Viewer</b>.</li>
+        <li>Copy the link and paste it below.</li>
         <li>Check the timezone your journal times are in, then press Start.</li>
       </ol>
-      <label class="drop" id="drop" for="file">
-        <input type="file" id="file" accept=".xlsx,.xls,.csv">
-        <span id="drop-text"><b>Drop your journal here</b> or click to choose the file</span>
-      </label>
+      <form class="linkrow" id="link-form">
+        <input type="url" id="sheet-url" placeholder="https://docs.google.com/spreadsheets/d/…" autocomplete="off">
+        <button type="submit" id="b-link">Load journal</button>
+      </form>
+      <details class="alt">
+        <summary>Don't want to share the link? Upload the file instead</summary>
+        <p class="sub">In Google Sheets choose <b>File → Download → Microsoft Excel (.xlsx)</b>, then drop that file here. It stays on your computer.</p>
+        <label class="drop" id="drop" for="file">
+          <input type="file" id="file" accept=".xlsx,.xls,.csv">
+          <span id="drop-text"><b>Drop your journal here</b> or click to choose the file</span>
+        </label>
+      </details>
       <div class="fields">
         <label>Your name <input type="text" id="name" placeholder="First name"></label>
         <label>Journal times are in
@@ -493,6 +506,7 @@ function cellNum(v) {
   return isNaN(n) ? null : n;
 }
 
+// a downloaded .xlsx / .csv -> journal
 function readJournal(buf, isCsv) {
   const wb = isCsv ? XLSX.read(new TextDecoder().decode(buf), { type: "string", raw: true })
                    : XLSX.read(buf, { type: "array" });
@@ -500,7 +514,40 @@ function readJournal(buf, isCsv) {
     || wb.SheetNames.find(n => /trading log/i.test(n) && !/calc/i.test(n)) || wb.SheetNames[0];
   const ws = wb.Sheets[name], range = XLSX.utils.decode_range(ws["!ref"] || "A1");
   range.s = { r: 0, c: 0 };   // count rows and columns from A1, so the column letters hold even when column A or row 1 is empty
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, range });
+  return journalFromRows(XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, range }), name);
+}
+
+// a link-shared Google Sheet -> journal, through Google's visualization endpoint (it allows browser pages
+// to read sheets shared "anyone with the link" and gives exact values, not the rounded display text)
+async function fetchSheet(link) {
+  const id = (String(link).match(/\/spreadsheets\/d\/([\w-]{20,})/) || [])[1];
+  if (!id) throw new Error("That isn't a Google Sheets link. Copy it from your journal's address bar or its Share button.");
+  let text;
+  try {
+    const r = await fetch(`https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:json&headers=0&sheet=${encodeURIComponent("Trading Log")}&range=A1:W`);
+    text = await r.text();
+  } catch (e) { text = ""; }
+  const a = text.indexOf("{"), z = text.lastIndexOf("}");
+  if (a < 0) throw new Error("Couldn't open your journal. In Google Sheets click Share, set General access to \"Anyone with the link\" (Viewer), then paste the link again.");
+  const res = JSON.parse(text.slice(a, z + 1));
+  if (res.status === "error") {
+    const msg = (res.errors && res.errors[0] && (res.errors[0].detailed_message || res.errors[0].message)) || "";
+    throw new Error(/sheet|range/i.test(msg) ? "Your journal has no tab called \"Trading Log\". Is this the ZCT Trading Journal (Phase 4)?" : "Google couldn't read your journal: " + msg);
+  }
+  const width = res.table.cols.length;
+  const rows = res.table.rows.map(row => {
+    const out = new Array(width).fill(null);
+    (row.c || []).forEach((c, j) => {
+      if (!c || c.v == null) return;
+      const d = typeof c.v === "string" && c.v.match(/^Date\((\d+),(\d+),(\d+)(?:,(\d+),(\d+))?/);   // months count from 0
+      out[j] = d ? wall(+d[1], +d[2] + 1, +d[3], +(d[4] || 0), +(d[5] || 0)) : c.v;
+    });
+    return out;
+  });
+  return journalFromRows(rows, "Trading Log");
+}
+
+function journalFromRows(rows, name) {
   // the header row is normally row 5; look for it in case a sheet has a row more or less
   let head = rows.slice(0, 12).findIndex(r => r && /entry/i.test(r[COL.entry_time] || "") && /coin|market/i.test(r[COL.coin] || ""));
   if (head < 0) head = 4;
@@ -546,26 +593,41 @@ function buildData() {
   };
 }
 
-async function loadFile(file) {
-  $("paste-err").textContent = ""; $("found").textContent = ""; $("b-start").disabled = true;
-  if (!file) return;
-  if (typeof XLSX === "undefined") { $("paste-err").textContent = "The spreadsheet reader didn't load. Check your internet connection and reload the page."; return; }
-  $("drop-text").innerHTML = `<b>${esc(file.name)}</b> · reading…`;
+// shared by the link and the file upload: read, report what was found, enable Start
+async function useJournal(read) {
+  $("paste-err").textContent = ""; $("found").textContent = "Reading your journal…"; $("b-start").disabled = true;
   try {
-    journal = readJournal(await file.arrayBuffer(), /\.csv$/i.test(file.name));
+    journal = await read();
     const n = journal.trades.length;
     if (!n) throw new Error(`No closed trades found on the "${journal.sheet}" tab. Each trade needs an entry date & time (column B), coin (G), Long/Short (H), entry price (J) and exit price (R).`);
     const used = journal.trades.slice(-MAX_TRADES);
     $("found").textContent = `Found ${n} closed trade${n === 1 ? "" : "s"} on "${journal.sheet}". You'll replay the last ${used.length}: ` +
       `${used[0].entry_time.slice(0, 10)} to ${used[used.length - 1].entry_time.slice(0, 10)}.`;
-    $("drop-text").innerHTML = `<b>${esc(file.name)}</b> · choose another file to replace it`;
-    if (!$("name").value) { const m = file.name.match(/Phase 4\s+([A-Z][a-z]+)/) || file.name.match(/^([A-Z][a-z]+)\s+ZC/); if (m) $("name").value = m[1]; }
     $("b-start").disabled = false;
+    return true;
   } catch (err) {
-    journal = null;
-    $("drop-text").innerHTML = `<b>Drop your journal here</b> or click to choose the file`;
-    $("paste-err").textContent = err.message.includes("No closed trades") ? err.message : "That file couldn't be read as a ZCT Trading Journal. Download it from Google Sheets with File → Download → Microsoft Excel (.xlsx) and try again.";
+    journal = null; $("found").textContent = "";
+    $("paste-err").textContent = err.message;
+    return false;
   }
+}
+
+function loadLink(e) {
+  e.preventDefault();
+  const link = $("sheet-url").value.trim();
+  if (link) useJournal(() => fetchSheet(link));
+}
+
+async function loadFile(file) {
+  if (!file) return;
+  if (typeof XLSX === "undefined") { $("paste-err").textContent = "The spreadsheet reader didn't load. Check your internet connection and reload the page."; return; }
+  $("drop-text").innerHTML = `<b>${esc(file.name)}</b> · reading…`;
+  const ok = await useJournal(async () => {
+    try { return readJournal(await file.arrayBuffer(), /\.csv$/i.test(file.name)); }
+    catch (e) { throw new Error("That file couldn't be read as a ZCT Trading Journal. Download it from Google Sheets with File → Download → Microsoft Excel (.xlsx) and try again."); }
+  });
+  $("drop-text").innerHTML = ok ? `<b>${esc(file.name)}</b> · choose another file to replace it` : `<b>Drop your journal here</b> or click to choose the file`;
+  if (ok && !$("name").value) { const m = file.name.match(/Phase 4\s+([A-Z][a-z]+)/) || file.name.match(/^([A-Z][a-z]+)\s+ZC/); if (m) $("name").value = m[1]; }
 }
 
 function showSetup() {
@@ -720,6 +782,7 @@ $("b-start").onclick = () => {
   boot(data);
 };
 $("file").onchange = e => loadFile(e.target.files[0]);
+$("link-form").onsubmit = loadLink;
 const drop = $("drop");
 drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
 drop.addEventListener("dragleave", () => drop.classList.remove("over"));
