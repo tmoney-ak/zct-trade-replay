@@ -576,19 +576,24 @@ function draw() {
     ctx.beginPath(); ctx.moveTo(Math.max(ex, x0), y); ctx.lineTo(x1, y); ctx.stroke(); ctx.setLineDash([]);
     if (ex < x1) tags.push([name + " " + fmt(+p), y, col]);
   }
-  // entry: a highlighted ring on the entry candle at the entry price, in the entry line's colour
-  if (view.shown > d.entryIdx && !isNaN(onChart(trade.entry, d))) {
-    const x = X(d.entryIdx), y = Y(onChart(trade.entry, d));
-    ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(76, 29, 149, 0.18)"; ctx.fill();
-    ctx.strokeStyle = C.entry; ctx.lineWidth = 2; ctx.stroke();
-  }
   // exit, once price has got there
   if (view.shown > d.exitIdx && trade.exit != null && trade.exit !== "") {
     const x = X(d.exitIdx), y = Y(onChart(trade.exit, d));
     ctx.strokeStyle = C.ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.stroke();
   }
   ctx.restore();
+  // entry: a big yellow ring with a soft glow on the entry candle at the entry price, drawn over everything
+  if (view.shown > d.entryIdx && !isNaN(onChart(trade.entry, d))) {
+    const x = X(d.entryIdx), y = Y(onChart(trade.entry, d));
+    if (x >= x0 && x <= x1) {
+      ctx.save();
+      ctx.beginPath(); ctx.arc(x, y, 13, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255, 214, 0, 0.28)"; ctx.fill();
+      ctx.shadowColor = "rgba(255, 196, 0, 0.9)"; ctx.shadowBlur = 10;
+      ctx.strokeStyle = "#f5b800"; ctx.lineWidth = 3.5; ctx.stroke();
+      ctx.restore();
+    }
+  }
   drawTags(tags, x1, axisW, yTop, yBot);
 }
 // price tags on the axis, nudged apart when two prices sit close together (e.g. an entry right at the level)
