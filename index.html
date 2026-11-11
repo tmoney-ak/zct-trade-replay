@@ -131,6 +131,12 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40p
         <label>Journal times are in
           <select id="tz"></select>
         </label>
+        <label>Exchange you trade on
+          <select id="exch">
+            <option value="">Not sure: match automatically</option>
+            <option>Binance</option><option>Bybit</option><option>Bitget</option><option>OKX</option>
+          </select>
+        </label>
       </div>
       <div class="sub" id="tz-note"></div>
       <div id="found" class="found"></div>
@@ -301,6 +307,12 @@ const SOURCES = [
         .map(k => [k.t, k.o, k.h, k.l, k.c]) },
 ];
 
+// exchanges in the order to try: the student's own first (their prices and levels match their charts exactly)
+function sourceOrder(pref) {
+  const own = SOURCES.find(x => x.name === pref);
+  return own ? [own].concat(SOURCES.filter(x => x !== own)) : SOURCES;
+}
+
 async function loadFrom(src, b, tf, s, e) {
   const step = tf * 60e3, bars = new Map(), parts = [];
   // candles per request: the exchange's limit, and no more than its longest allowed time range (Bitget: 90 days)
@@ -350,10 +362,10 @@ async function fetchTrade(t) {
   // else at another UTC offset (wrong timezone, daylight saving), else the first exchange that has candles,
   // with the mismatch warning. Exchanges are tried in order; a match ends the search.
   const w0 = parseTime(t.entry_time, 0), x0 = parseTime(t.exit_time, 0);
-  const fitsIn = at => h => priceFits(at, w0, Number(t.entry), h) && priceFits(at, x0, Number(t.exit), h) !== false;
+  const fitsIn = at => h => tradeMiss(at, t, h) <= 0.0005;   // exact, allowing for rounding
   const byTime = list => new Map(list.map(k => [k.t, k]));
   let fallback = null;
-  for (const src of t._src ? SOURCES.filter(x => x.name === t._src) : SOURCES) {
+  for (const src of t._src ? SOURCES.filter(x => x.name === t._src) : sourceOrder(DATA.exchange)) {
     let bars;
     try { bars = await loadFrom(src, b, tf, s, e); } catch (err) { tried.push(src.name); continue; }
     const ei = bars.findIndex(k => k.t === entryOpen);
@@ -363,7 +375,8 @@ async function fetchTrade(t) {
       try {
         const span = x0 && x0 > w0 ? Math.min(x0 - w0, 3 * 3600e3) : 0;
         const wide = await loadFrom(src, b, 1, Math.floor((w0 - 14.5 * 3600e3) / 6e4) * 6e4, Math.floor((w0 + 12.5 * 3600e3 + span) / 6e4) * 6e4);
-        const ok = OFFSETS.filter(fitsIn(byTime(wide))).sort((p, q) => Math.abs(p - offOf(t)) - Math.abs(q - offOf(t)));
+        // the offset where the prices miss least (a small miss is this exchange's price differing from the student's)
+        const ok = bestOffsets(byTime(wide), t, offOf(t));
         if (ok.length) { t._shift = ok[0] - offOf(t); t.utc_offset = ok[0]; t._src = src.name; return fetchTrade(t); }
       } catch (err) {}
     }
@@ -750,11 +763,23 @@ function fillTimezones() {
     OFFSETS.map(h => `<option value="${h}">${utcName(h)}</option>`).join("");
 }
 
-// does a journal price sit inside the 1-minute candle at that journal time, read at offset h?
-function priceFits(at, wallMs, price, h) {
-  if (wallMs == null || price == null) return null;
+// How far a trade's journal prices miss the 1-minute candles at their journal times, read at UTC offset h:
+// 0 when the entry and exit sit inside their candles, else the larger miss as a share of the price.
+// Exchanges differ by a fraction of a percent, so a trade "matches" when the miss is within MATCH.
+const MATCH = 0.004;
+function missAt(at, wallMs, price, h) {
+  if (wallMs == null || price == null || price === "" || isNaN(price)) return 0;
   const k = at.get(Math.floor((wallMs - h * 3600e3) / 6e4) * 6e4);
-  return !!k && price >= k.l * 0.9995 && price <= k.h * 1.0005;
+  if (!k) return Infinity;
+  const p = Number(price);
+  return p < k.l ? (k.l - p) / p : p > k.h ? (p - k.h) / p : 0;
+}
+const tradeMiss = (at, t, h) => Math.max(missAt(at, parseTime(t.entry_time, 0), t.entry, h), missAt(at, parseTime(t.exit_time, 0), t.exit, h));
+// the offsets where the trade matches best (within MATCH), closest to `near` first
+function bestOffsets(at, t, near) {
+  const miss = OFFSETS.map(h => [h, tradeMiss(at, t, h)]), best = Math.min(...miss.map(m => m[1]));
+  if (!(best <= MATCH)) return [];
+  return miss.filter(m => m[1] <= best + 0.0005).map(m => m[0]).sort((p, q) => Math.abs(p - near) - Math.abs(q - near));
 }
 // the journal's timezone, found from the trades themselves: the UTC offset that puts the most entries
 // (and exits) inside the candle at the journal's time, checked on the 6 most recent trades. Each trade counts
@@ -762,13 +787,15 @@ function priceFits(at, wallMs, price, h) {
 // (and where Binance and Bybit are blocked, as in the US, Bitget still answers).
 async function detectOffset(trades) {
   const score = new Map(OFFSETS.map(h => [h, 0]));
-  const srcs = SOURCES.filter(x => ["Binance", "Bybit", "Bitget"].includes(x.name));
+  const pick = $("exch").value;
+  const srcs = sourceOrder(pick).filter(x => ["Binance", "Bybit", "Bitget", pick].includes(x.name));
   const one = async t => {
     const e0 = parseTime(t.entry_time, 0), x0 = parseTime(t.exit_time, 0);
     if (e0 == null) return false;
     const span = x0 && x0 > e0 ? Math.min(x0 - e0, 6 * 3600e3) : 0;
     const s = Math.floor((e0 - 14.5 * 3600e3) / 6e4) * 6e4, e = Math.floor((e0 + 12.5 * 3600e3 + span) / 6e4) * 6e4;
-    const fit = new Set();
+    // per offset, the smallest miss on any exchange; the trade votes for the offsets that miss least
+    const miss = new Map(OFFSETS.map(h => [h, Infinity]));
     let any = false;
     for (const src of srcs) {
       let bars;
@@ -776,9 +803,10 @@ async function detectOffset(trades) {
       if (bars.length < 60) continue;
       any = true;
       const at = new Map(bars.map(k => [k.t, k]));
-      OFFSETS.forEach(h => { if (priceFits(at, e0, t.entry, h) && priceFits(at, x0, t.exit, h) !== false) fit.add(h); });
+      OFFSETS.forEach(h => miss.set(h, Math.min(miss.get(h), tradeMiss(at, t, h))));
     }
-    fit.forEach(h => score.set(h, score.get(h) + 1));
+    const best = Math.min(...miss.values());
+    if (best <= MATCH) miss.forEach((m, h) => { if (m <= best + 0.0005) score.set(h, score.get(h) + 1); });
     return any;
   };
   let checked = 0;
@@ -795,7 +823,7 @@ function localOffset(entryTime) {
 function buildData() {
   const tz = $("tz").value, picked = journal.trades.slice(-MAX_TRADES);
   return {
-    student: $("name").value.trim(), utc_offset: tz === "local" ? 0 : Number(tz),
+    student: $("name").value.trim(), utc_offset: tz === "local" ? 0 : Number(tz), exchange: $("exch").value,
     trades: picked.map((t, i) => Object.assign({ n: i + 1 }, t, tz === "local" ? { utc_offset: localOffset(t.entry_time) } : {})),
   };
 }
