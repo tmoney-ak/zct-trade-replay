@@ -323,34 +323,38 @@ async function fetchTrade(t) {
   const tail = Math.max(20, Math.round((exitOpen - entryOpen) / step * 0.25));
   const s = entryOpen - LOOKBACK * step, e = Math.min(exitOpen + tail * step, Math.floor(Date.now() / step) * step);
   const b = base(t.coin), tried = [];
-  for (const src of SOURCES) {
-    try {
-      const bars = await loadFrom(src, b, tf, s, e);
-      const ei = bars.findIndex(k => k.t === entryOpen);
-      // safety net when a trade's times don't match the candles (wrong timezone picked, a daylight-saving change,
-      // a trade logged from another timezone): look across every offset for one where the entry AND the exit fit
-      // their candles, move this trade to it, and load it again. The source line says it was shifted.
-      if (ei > 5 && tf === 1 && t._shift == null) {
-        const w0 = parseTime(t.entry_time, 0), x0 = parseTime(t.exit_time, 0);
-        const fitsIn = at => h => priceFits(at, w0, Number(t.entry), h) && priceFits(at, x0, Number(t.exit), h) !== false;
-        if (!fitsIn(new Map(bars.map(k => [k.t, k])))(offOf(t))) {
-          const span = x0 && x0 > w0 ? Math.min(x0 - w0, 3 * 3600e3) : 0;
-          const wide = await loadFrom(src, b, 1, Math.floor((w0 - 14.5 * 3600e3) / 6e4) * 6e4, Math.floor((w0 + 12.5 * 3600e3 + span) / 6e4) * 6e4);
-          const ok = OFFSETS.filter(fitsIn(new Map(wide.map(k => [k.t, k])))).sort((p, q) => Math.abs(p - offOf(t)) - Math.abs(q - offOf(t)));
-          t._shift = ok.length ? ok[0] - offOf(t) : 0;
-          if (ok.length) { t.utc_offset = ok[0]; return fetchTrade(t); }
-        }
-      }
-      if (ei > 5) {
-        let xi = bars.findIndex(k => k.t === exitOpen);
-        if (xi < ei) xi = bars.length - 1;
-        const d = { bars, tf, entryIdx: ei, exitIdx: xi, source: src.name };
-        try { d.levels = await findLevels(t, src, b, d, entryMs); } catch (err) { d.levels = []; }
-        return d;
-      }
-      tried.push(src.name + " (no candles at that time)");
-    } catch (err) { tried.push(src.name); }
+  const finish = async (src, bars, ei) => {
+    let xi = bars.findIndex(k => k.t === exitOpen);
+    if (xi < ei) xi = bars.length - 1;
+    const d = { bars, tf, entryIdx: ei, exitIdx: xi, source: src.name };
+    try { d.levels = await findLevels(t, src, b, d, entryMs); } catch (err) { d.levels = []; }
+    return d;
+  };
+  // Prices differ a little between exchanges (a fill at 0.4731 on Bybit can sit above Binance's whole candle),
+  // so use the exchange whose candles hold the journal's entry and exit: at the journal's time if possible,
+  // else at another UTC offset (wrong timezone, daylight saving), else the first exchange that has candles,
+  // with the mismatch warning. Exchanges are tried in order; a match ends the search.
+  const w0 = parseTime(t.entry_time, 0), x0 = parseTime(t.exit_time, 0);
+  const fitsIn = at => h => priceFits(at, w0, Number(t.entry), h) && priceFits(at, x0, Number(t.exit), h) !== false;
+  const byTime = list => new Map(list.map(k => [k.t, k]));
+  let fallback = null;
+  for (const src of t._src ? SOURCES.filter(x => x.name === t._src) : SOURCES) {
+    let bars;
+    try { bars = await loadFrom(src, b, tf, s, e); } catch (err) { tried.push(src.name); continue; }
+    const ei = bars.findIndex(k => k.t === entryOpen);
+    if (ei <= 5) { tried.push(src.name + " (no candles at that time)"); continue; }
+    if (tf > 1 || t._src || fitsIn(byTime(bars))(offOf(t))) return finish(src, bars, ei);
+    if (src.chunk >= 200) {   // the wide search needs about 1,600 candles: skip exchanges that serve 100 at a time
+      try {
+        const span = x0 && x0 > w0 ? Math.min(x0 - w0, 3 * 3600e3) : 0;
+        const wide = await loadFrom(src, b, 1, Math.floor((w0 - 14.5 * 3600e3) / 6e4) * 6e4, Math.floor((w0 + 12.5 * 3600e3 + span) / 6e4) * 6e4);
+        const ok = OFFSETS.filter(fitsIn(byTime(wide))).sort((p, q) => Math.abs(p - offOf(t)) - Math.abs(q - offOf(t)));
+        if (ok.length) { t._shift = ok[0] - offOf(t); t.utc_offset = ok[0]; t._src = src.name; return fetchTrade(t); }
+      } catch (err) {}
+    }
+    if (!fallback) fallback = [src, bars, ei];
   }
+  if (fallback) return finish(...fallback);
   throw new Error(`Couldn't load ${b} candles. Tried: ${tried.join(", ")}`);
 }
 
@@ -736,14 +740,9 @@ function priceFits(at, wallMs, price, h) {
   const k = at.get(Math.floor((wallMs - h * 3600e3) / 6e4) * 6e4);
   return !!k && price >= k.l * 0.9995 && price <= k.h * 1.0005;
 }
-async function anyBars(coin, s, e) {
-  for (const src of SOURCES) {
-    try { const bars = await loadFrom(src, base(coin), 1, s, e); if (bars.length > 60) return bars; } catch (err) {}
-  }
-  return null;
-}
 // the journal's timezone, found from the trades themselves: the UTC offset that puts the most entries
-// (and exits) inside the candle at the journal's time, checked on the most recent few trades
+// (and exits) inside the candle at the journal's time, checked on the most recent few trades. Each trade is
+// checked on Binance, then Bybit and Bitget until one exchange's candles hold its prices at some offset.
 async function detectOffset(trades) {
   const score = new Map(OFFSETS.map(h => [h, 0]));
   let checked = 0;
@@ -751,14 +750,18 @@ async function detectOffset(trades) {
     const e0 = parseTime(t.entry_time, 0), x0 = parseTime(t.exit_time, 0);
     if (e0 == null) continue;
     const span = x0 && x0 > e0 ? Math.min(x0 - e0, 6 * 3600e3) : 0;
-    const bars = await anyBars(t.coin, Math.floor((e0 - 14.5 * 3600e3) / 6e4) * 6e4, Math.floor((e0 + 12.5 * 3600e3 + span) / 6e4) * 6e4);
-    if (!bars) continue;
-    checked++;
-    const at = new Map(bars.map(k => [k.t, k]));
-    for (const h of OFFSETS) {
-      const a = priceFits(at, e0, t.entry, h), b = priceFits(at, x0, t.exit, h);
-      if (a && b !== false) score.set(h, score.get(h) + 1);
+    const s = Math.floor((e0 - 14.5 * 3600e3) / 6e4) * 6e4, e = Math.floor((e0 + 12.5 * 3600e3 + span) / 6e4) * 6e4;
+    let any = false;
+    for (const src of SOURCES.filter(x => x.chunk >= 200)) {
+      let bars;
+      try { bars = await loadFrom(src, base(t.coin), 1, s, e); } catch (err) { continue; }
+      if (bars.length < 60) continue;
+      any = true;
+      const at = new Map(bars.map(k => [k.t, k]));
+      const fit = OFFSETS.filter(h => priceFits(at, e0, t.entry, h) && priceFits(at, x0, t.exit, h) !== false);
+      if (fit.length) { fit.forEach(h => score.set(h, score.get(h) + 1)); break; }
     }
+    if (any) checked++;
   }
   const local = -new Date().getTimezoneOffset() / 60;
   // most matches wins; on a tie prefer whole hours, then the offset closest to this computer's
