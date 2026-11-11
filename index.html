@@ -273,21 +273,23 @@ async function getJSON(url, opts) {
   } finally { clearTimeout(timer); }
 }
 // each source: chunk = max candles per request; get(base, tfMin, fromMs, toMs) -> [[openMs, o, h, l, c], ...]
+// tfMin is 1, 5, 15, 30, 60 or 1440 (daily, UTC days); iv() spells it the way each exchange wants
+const iv = (tf, m, h, d) => (tf === 1440 ? d : tf === 60 ? h : tf + m);
 const SOURCES = [
   { name: "Binance", chunk: 1500, get: async (b, tf, s, e) =>
-      (await getJSON(`https://fapi.binance.com/fapi/v1/klines?symbol=${b}USDT&interval=${tf < 60 ? tf + "m" : "1h"}&startTime=${s}&endTime=${e}&limit=1500`)) },
+      (await getJSON(`https://fapi.binance.com/fapi/v1/klines?symbol=${b}USDT&interval=${iv(tf, "m", "1h", "1d")}&startTime=${s}&endTime=${e}&limit=1500`)) },
   { name: "Bybit", chunk: 1000, get: async (b, tf, s, e) =>
-      (await getJSON(`https://api.bybit.com/v5/market/kline?category=linear&symbol=${b}USDT&interval=${tf}&start=${s}&end=${e}&limit=1000`)).result.list },
+      (await getJSON(`https://api.bybit.com/v5/market/kline?category=linear&symbol=${b}USDT&interval=${iv(tf, "", "60", "D")}&start=${s}&end=${e}&limit=1000`)).result.list },
   { name: "Bitget", chunk: 200, get: async (b, tf, s, e) =>
-      (await getJSON(`https://api.bitget.com/api/v2/mix/market/history-candles?symbol=${b}USDT&productType=usdt-futures&granularity=${tf < 60 ? tf + "m" : "1H"}&startTime=${s}&endTime=${e + 1}&limit=200`)).data },
+      (await getJSON(`https://api.bitget.com/api/v2/mix/market/history-candles?symbol=${b}USDT&productType=usdt-futures&granularity=${iv(tf, "m", "1H", "1Dutc")}&startTime=${s}&endTime=${e + 1}&limit=200`)).data },
   { name: "OKX", chunk: 100, get: async (b, tf, s, e) =>
-      (await getJSON(`https://www.okx.com/api/v5/market/history-candles?instId=${b}-USDT-SWAP&bar=${tf < 60 ? tf + "m" : "1H"}&after=${e + 1}&before=${s - 1}&limit=100`)).data },
+      (await getJSON(`https://www.okx.com/api/v5/market/history-candles?instId=${b}-USDT-SWAP&bar=${iv(tf, "m", "1H", "1Dutc")}&after=${e + 1}&before=${s - 1}&limit=100`)).data },
   { name: "Gate", chunk: 1000, get: async (b, tf, s, e) =>
-      (await getJSON(`https://api.gateio.ws/api/v4/futures/usdt/candlesticks?contract=${b}_USDT&interval=${tf < 60 ? tf + "m" : "1h"}&from=${s / 1000}&to=${e / 1000}`))
+      (await getJSON(`https://api.gateio.ws/api/v4/futures/usdt/candlesticks?contract=${b}_USDT&interval=${iv(tf, "m", "1h", "1d")}&from=${s / 1000}&to=${e / 1000}`))
         .map(k => [k.t * 1000, k.o, k.h, k.l, k.c]) },
   { name: "Hyperliquid", chunk: 5000, get: async (b, tf, s, e) =>
       (await getJSON("https://api.hyperliquid.xyz/info", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "candleSnapshot", req: { coin: b, interval: tf < 60 ? tf + "m" : "1h", startTime: s, endTime: e } }) }))
+        body: JSON.stringify({ type: "candleSnapshot", req: { coin: b, interval: iv(tf, "m", "1h", "1d"), startTime: s, endTime: e } }) }))
         .map(k => [k.t, k.o, k.h, k.l, k.c]) },
 ];
 
@@ -338,7 +340,9 @@ async function fetchTrade(t) {
       if (ei > 5) {
         let xi = bars.findIndex(k => k.t === exitOpen);
         if (xi < ei) xi = bars.length - 1;
-        return { bars, tf, entryIdx: ei, exitIdx: xi, source: src.name };
+        const d = { bars, tf, entryIdx: ei, exitIdx: xi, source: src.name };
+        try { d.levels = await findLevels(t, src, b, d, entryMs); } catch (err) { d.levels = []; }
+        return d;
       }
       tried.push(src.name + " (no candles at that time)");
     } catch (err) { tried.push(src.name); }
@@ -346,10 +350,73 @@ async function fetchTrade(t) {
   throw new Error(`Couldn't load ${b} candles. Tried: ${tried.join(", ")}`);
 }
 
+// ---------- systematic levels ----------
+
+// The level a trade was taken at, if it's a systematic one: the previous 15m / 1h / 4h candle's high or low,
+// the previous day / week / month high or low, or the all-time high or low. Only candles that closed before
+// the entry count. The level "used" is the one at the entry; failing that, the nearest between entry and stop.
+const DAY = 864e5;
+async function findLevels(t, src, b, d, entryMs) {
+  const { bars, tf, entryIdx } = d, cands = [];
+  const add = (name, what, price, from) => cands.push({ name, what, price, from });
+  const prev = (spanMin, name, label) => {
+    if (tf > spanMin) return;
+    const span = spanMin * 6e4, end = Math.floor(entryMs / span) * span, start = end - span;
+    const inside = bars.filter(k => k.t >= start && k.t < end);
+    if (inside.length < (spanMin / tf) * 0.8) return;
+    const hk = inside.reduce((a, k) => (k.h > a.h ? k : a)), lk = inside.reduce((a, k) => (k.l < a.l ? k : a));
+    add(name + "H", `previous ${label} high`, hk.h, hk.t);
+    add(name + "L", `previous ${label} low`, lk.l, lk.t);
+  };
+  prev(15, "P15", "15-minute"); prev(60, "P1", "1-hour"); prev(240, "P4", "4-hour");
+
+  // day / week / month / all-time from daily candles (UTC days, like the exchanges), up to the day before the entry
+  const today = Math.floor(entryMs / DAY) * DAY;
+  const daily = await loadFrom(src, b, 1440, today - 1000 * DAY, today - DAY);
+  const ext = (list, name, what) => {
+    if (!list.length) return;
+    add(name + "H", what + " high", Math.max(...list.map(k => k.h)));
+    add(name + "L", what + " low", Math.min(...list.map(k => k.l)));
+  };
+  ext(daily.filter(k => k.t === today - DAY), "PD", "previous day's");
+  const dow = (new Date(today).getUTCDay() + 6) % 7, week = today - dow * DAY;   // weeks start Monday 00:00 UTC
+  ext(daily.filter(k => k.t >= week - 7 * DAY && k.t < week), "PW", "previous week's");
+  const dt0 = new Date(today), month = Date.UTC(dt0.getUTCFullYear(), dt0.getUTCMonth(), 1);
+  ext(daily.filter(k => k.t >= Date.UTC(dt0.getUTCFullYear(), dt0.getUTCMonth() - 1, 1) && k.t < month), "PM", "previous month's");
+  if (daily.length && daily.length < 990) {   // the coin listed inside the window, so this really is all-time
+    const sofar = daily.concat(bars.filter(k => k.t >= today && k.t < bars[entryIdx].t));
+    add("ATH", "all-time high", Math.max(...sofar.map(k => k.h)));
+    add("ATL", "all-time low", Math.min(...sofar.map(k => k.l)));
+  }
+
+  // which of them the trade used
+  const e = Number(t.entry), s = t.stop == null || t.stop === "" ? NaN : Number(t.stop);
+  const ranges = bars.slice(Math.max(0, entryIdx - 60), entryIdx).map(k => k.h - k.l).sort((x, y) => x - y);
+  const tol = Math.max(e * 0.001, (ranges[ranges.length >> 1] || 0) * 0.5);
+  const lo = isNaN(s) ? e : Math.min(e, s), hi = isNaN(s) ? e : Math.max(e, s);
+  const byDist = (x, y) => Math.abs(x.price - e) - Math.abs(y.price - e);
+  const atEntry = cands.filter(c => Math.abs(c.price - e) <= tol).sort(byDist);
+  const used = atEntry.length ? atEntry : cands.filter(c => c.price >= lo && c.price <= hi).sort(byDist);
+  // one level: the closest; others at the same price join it ("P15L / P1L")
+  const out = [];
+  for (const c of used) {
+    const same = out.find(o => Math.abs(o.price - c.price) <= e * 1e-6);
+    if (same) { same.name += " / " + c.name; same.what += " and " + c.what; }
+    else if (!out.length) out.push(Object.assign({}, c));
+  }
+  // start each line at the candle that made it, when that candle is on the chart
+  for (const o of out) {
+    const i = bars.findIndex(k => k.t < bars[entryIdx].t && (k.h === o.price || k.l === o.price));
+    o.idx = o.from != null ? bars.findIndex(k => k.t === o.from) : i;
+    if (o.idx < 0) o.idx = i;
+  }
+  return out;
+}
+
 // ---------- chart ----------
 
 const cv = document.getElementById("chart"), ctx = cv.getContext("2d");
-const C = { up: "#26a69a", down: "#ef5350", grid: "#eef1f1", axis: "#8a9494", ink: "#1a1a1a", entry: "#4c1d95", stop: "#c0392b", target: "#1a1a1a", marker: "#a87d00" };
+const C = { up: "#26a69a", down: "#ef5350", grid: "#eef1f1", axis: "#8a9494", ink: "#1a1a1a", entry: "#4c1d95", stop: "#c0392b", target: "#1a1a1a", marker: "#a87d00", level: "#4a4a4a" };
 let view = null;   // {trade, d, shown, phase, yLo, yHi, anim}
 
 function rangeOf(bars, extra) {
@@ -433,7 +500,18 @@ function draw() {
     ctx.fillRect(X(i) - bw / 2, top, bw, Math.max(1, bot - top));
   }
 
-  const ex = X(d.entryIdx) - slot / 2;
+  const ex = X(d.entryIdx) - slot / 2, tags = [];
+  // the systematic level the trade was taken at: plain grey like a TradingView line, from the candle that made it
+  for (const lv of d.levels || []) {
+    const y = Math.round(Y(lv.price)) + 0.5;
+    if (y < yTop - 2 || y > yBot + 2) continue;
+    const xa = lv.idx >= 0 ? Math.max(x0, X(lv.idx)) : x0;
+    ctx.strokeStyle = C.level; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(x1, y); ctx.stroke();
+    ctx.fillStyle = C.level; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+    ctx.fillText(lv.name, Math.min(xa + 4, x1 - 60), y - 3);
+    tags.push([lv.name.split(" / ")[0] + " " + fmt(lv.price), y, C.level]);
+  }
   if (view.phase === "pre") {
     // where the entry candle will form
     ctx.strokeStyle = C.marker; ctx.setLineDash([4, 4]); ctx.lineWidth = 1.2;
@@ -441,11 +519,11 @@ function draw() {
     ctx.fillStyle = C.marker; ctx.textAlign = "right"; ctx.textBaseline = "top";
     ctx.fillText("Your entry candle is next", ex - 6, yTop + 2);
     ctx.restore();
+    drawTags(tags, x1, axisW, yTop, yBot);
     return;
   }
   // entry / stop / target from the entry candle to the axis, each with a price tag on the axis
   const lines = [[trade.target, C.target, "TP", true], [trade.stop, C.stop, "SL", true], [trade.entry, C.entry, "Entry", false]];
-  const tags = [];
   for (const [p, col, name, dashed] of lines) {
     if (p == null || p === "" || isNaN(p)) continue;
     const y = Math.round(Y(+p)) + 0.5;
@@ -460,7 +538,14 @@ function draw() {
     ctx.strokeStyle = C.ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.stroke();
   }
   ctx.restore();
-  for (const [text, y, col] of tags) tag(text, x1, y, col, axisW);
+  drawTags(tags, x1, axisW, yTop, yBot);
+}
+// price tags on the axis, nudged apart when two prices sit close together (e.g. an entry right at the level)
+function drawTags(tags, x1, axisW, yTop, yBot) {
+  tags.sort((a, z) => a[1] - z[1]);
+  let prev = -Infinity;
+  for (const tg of tags) { tg[1] = Math.max(tg[1], prev + 19); prev = tg[1]; }
+  for (const [text, y, col] of tags) tag(text, x1, Math.min(y, yBot + 8), col, axisW);
 }
 function tag(text, x, y, col, w) {
   ctx.font = "11px 'PT Sans', sans-serif";
@@ -781,6 +866,9 @@ async function show(i) {
 
 function srcLine(t, d) {
   const k = d.bars[d.entryIdx], parts = [`${d.source} candles · ${d.tf} min`];
+  if (d.levels && d.levels.length)
+    parts.push("Systematic level: " + d.levels.map(l => `<b>${esc(l.name)}</b> ${fmt(l.price)} (${esc(l.what)})`).join(", "));
+  t.level = (d.levels || []).map(l => l.name + " " + l.price).join("; ");
   const e = Number(t.entry), tol = (k.h - k.l) * 0.25 + e * 0.0005;
   if (!isNaN(e) && (e < k.l - tol || e > k.h + tol))
     parts.push(`<span class="warn">Your entry ${fmt(e)} isn't inside the ${localLabel(k.t)} candle (${fmt(k.l)} to ${fmt(k.h)}) on ${d.source}. The time, the timezone or the exchange may differ.</span>`);
@@ -834,7 +922,7 @@ function rows() {
   return TRADES.map((t, i) => {
     const d = store.decisions[i];
     return { n: i + 1, coin: base(t.coin), direction: t.direction, strategy: t.strategy || "", entry_time: t.entry_time,
-      entry: t.entry, stop: t.stop, target: t.target, exit: t.exit, r: rOf(t), result: resultOf(t),
+      entry: t.entry, stop: t.stop, target: t.target, exit: t.exit, level: t.level || "", r: rOf(t), result: resultOf(t),
       decision: d ? (d.unavailable ? "chart unavailable" : d.take ? "take again" : "wouldn't take") : "", decided_at: d ? d.at : "" };
   });
 }
