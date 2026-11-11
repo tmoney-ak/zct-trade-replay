@@ -1,0 +1,746 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZCT Trade Replay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=PT+Sans:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f4f6f6;--card:#fff;--ink:#1a1a1a;--muted:#6b7575;--line:#e2e7e7;--teal:#2b8b89;--teal-ink:#fff;
+  --up:#26a69a;--down:#ef5350;--entry:#4c1d95;--stop:#c0392b;--gold:#a87d00;--win:#1e7a52;--loss:#b03a2e}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "PT Sans",system-ui,sans-serif}
+header{background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+.bar{max-width:1040px;margin:0 auto;padding:12px 16px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px}
+.brand{font-weight:700;font-size:17px}.brand span{color:var(--teal)}
+.who{color:var(--muted)}.grow{flex:1}
+.stat{font-size:13px;color:var(--muted)}.stat b{color:var(--ink)}
+.progress{height:3px;background:var(--line)}.progress i{display:block;height:100%;width:0;background:var(--teal);transition:width .3s}
+main{max-width:1040px;margin:0 auto;padding:18px 16px 40px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;padding:14px 18px;border-bottom:1px solid var(--line)}
+.meta .n{color:var(--muted);font-size:13px}.meta .coin{font-size:20px;font-weight:700}
+.pill{font-size:12px;font-weight:700;padding:2px 8px;border-radius:5px;border:1px solid var(--line)}
+.pill.Long{color:var(--win);background:#e9f5ef;border-color:#cfe8dc}.pill.Short{color:var(--loss);background:#fbecea;border-color:#f1d2ce}
+.pill.strat{color:var(--ink);background:#f1f3f3}
+.meta .when{color:var(--muted);font-size:13px}
+.chartwrap{position:relative;background:#fff}
+canvas{display:block;width:100%;height:420px}
+.overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;color:var(--muted);background:rgba(255,255,255,.85)}
+.overlay[hidden]{display:none}
+.src{padding:6px 18px;font-size:12px;color:var(--muted);border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:4px 14px}
+.warn{color:#8a5a00}
+.decide{padding:18px;border-top:1px solid var(--line)}
+.q{font-size:17px;font-weight:700;margin:0 0 4px}.sub{color:var(--muted);margin:0 0 14px;font-size:14px}
+.btns{display:flex;flex-wrap:wrap;gap:10px}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--ink);padding:10px 18px}
+button:hover{border-color:#b9c2c2}button:disabled{opacity:.45;cursor:default}
+.take{background:var(--teal);border-color:var(--teal);color:var(--teal-ink);font-weight:700}
+.take:hover{border-color:#1f6e6c;background:#257e7c}
+.skip{font-weight:700}
+.kbd{font-size:11px;color:inherit;opacity:.7;margin-left:6px}
+.result{padding:16px 18px;border-top:1px solid var(--line);display:none}
+.result.show{display:block}
+.rbig{font-size:26px;font-weight:700}.rbig.WIN{color:var(--win)}.rbig.LOSS{color:var(--loss)}.rbig.BREAKEVEN{color:var(--muted)}
+.verdict{margin:6px 0 12px}
+.plan{font-size:13px;color:var(--muted);margin-bottom:12px}
+.links{font-size:13px}.links a{color:var(--teal)}
+.nav{display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:center;margin-top:14px}
+.ghost{background:transparent;border-color:transparent;color:var(--muted);padding:8px 6px}
+.ghost:hover{color:var(--ink);border-color:transparent}
+#summary{display:none}#summary.show{display:block}
+.summary-head{padding:18px;border-bottom:1px solid var(--line)}
+.summary-head h2{margin:0 0 4px;font-size:20px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;padding:18px}
+.tile{border:1px solid var(--line);border-radius:10px;padding:14px}
+.tile .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.tile .v{font-size:24px;font-weight:700;margin:2px 0}.tile .d{font-size:13px;color:var(--muted)}
+.tablewrap{overflow-x:auto;padding:0 18px 18px}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:620px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-size:12px;color:var(--muted);font-weight:400;text-transform:uppercase;letter-spacing:.04em}
+td.r.WIN{color:var(--win)}td.r.LOSS{color:var(--loss)}
+.exports{display:flex;flex-wrap:wrap;gap:10px;padding:0 18px 18px}
+footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40px}
+.setup-body{padding:18px;display:grid;gap:14px}
+.steps{margin:0;padding-left:20px;display:grid;gap:4px}
+.drop{position:relative;display:block;border:2px dashed #c6d0d0;border-radius:10px;padding:28px 16px;text-align:center;cursor:pointer;color:var(--muted)}
+.drop b{color:var(--ink)}.drop:hover,.drop.over{border-color:var(--teal);background:#f2f8f8}
+.drop input{position:absolute;opacity:0;width:1px;height:1px}
+.drop:focus-within{border-color:var(--teal)}
+.fields{display:flex;flex-wrap:wrap;gap:12px 24px}
+.fields label{display:grid;gap:4px;font-size:13px;color:var(--muted)}
+.fields input,.fields select{font:inherit;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fff;min-width:220px;max-width:100%}
+.found{font-size:14px}.found:empty,.warn:empty{display:none}
+[hidden]{display:none!important}
+@media (max-width:640px){canvas{height:300px}.meta .coin{font-size:18px}.btns button{flex:1}}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="brand">ZCT <span>Trade Replay</span></div>
+    <div class="who" id="who"></div>
+    <div class="grow"></div>
+    <div class="stat">Reviewed <b id="s-done">0</b>/<b id="s-total">0</b></div>
+    <div class="stat">Take again <b id="s-take">0</b> · Wouldn't <b id="s-skip">0</b></div>
+    <button class="ghost" id="to-summary">Summary</button>
+    <button class="ghost" id="to-setup">Load other trades</button>
+  </div>
+  <div class="progress"><i id="prog"></i></div>
+</header>
+
+<main>
+  <section class="card" id="setup" hidden>
+    <div class="summary-head">
+      <h2>Replay your last 30 trades</h2>
+      <div class="sub">Each chart stops on the candle before your entry. You decide whether you'd take the trade again, then watch how it played out.</div>
+    </div>
+    <div class="setup-body">
+      <ol class="steps">
+        <li>Open your ZCT Trading Journal in Google Sheets and choose <b>File → Download → Microsoft Excel (.xlsx)</b>.</li>
+        <li>Drop that file below. It stays on your computer: nothing is uploaded.</li>
+        <li>Check the timezone your journal times are in, then press Start.</li>
+      </ol>
+      <label class="drop" id="drop" for="file">
+        <input type="file" id="file" accept=".xlsx,.xls,.csv">
+        <span id="drop-text"><b>Drop your journal here</b> or click to choose the file</span>
+      </label>
+      <div class="fields">
+        <label>Your name <input type="text" id="name" placeholder="First name"></label>
+        <label>Journal times are in
+          <select id="tz"></select>
+        </label>
+      </div>
+      <div id="found" class="found"></div>
+      <div class="warn" id="paste-err"></div>
+      <div class="btns">
+        <button class="take" id="b-start" disabled>Start replay</button>
+        <button id="b-sample">Try it with sample trades</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" id="review">
+    <div class="meta">
+      <span class="n" id="m-n"></span>
+      <span class="coin" id="m-coin"></span>
+      <span class="pill" id="m-dir"></span>
+      <span class="pill strat" id="m-strat"></span>
+      <span class="when" id="m-when"></span>
+    </div>
+    <div class="chartwrap">
+      <canvas id="chart"></canvas>
+      <div class="overlay" id="overlay">Loading candles…</div>
+    </div>
+    <div class="src" id="src"></div>
+    <div class="decide" id="decide">
+      <p class="q">With a calm mind and only what you could see then: would you take this trade again?</p>
+      <p class="sub">The chart stops on the candle before your entry. The result stays hidden until you choose.</p>
+      <div class="btns">
+        <button class="take" id="b-take">Take it again<span class="kbd">1</span></button>
+        <button class="skip" id="b-skip">Wouldn't take it again<span class="kbd">2</span></button>
+      </div>
+    </div>
+    <div class="result" id="result">
+      <div class="rbig" id="r-big"></div>
+      <div class="verdict" id="r-verdict"></div>
+      <div class="plan" id="r-plan"></div>
+      <div class="links" id="r-links"></div>
+      <div class="nav">
+        <button class="ghost" id="b-replay">Replay the trade</button>
+        <button class="take" id="b-next">Next trade<span class="kbd">Enter</span></button>
+      </div>
+    </div>
+    <div class="nav" style="padding:0 18px 14px">
+      <button class="ghost" id="b-prev">← Previous</button>
+      <button class="ghost" id="b-unavail" hidden>Chart won't load: skip this trade →</button>
+    </div>
+  </section>
+
+  <section class="card" id="summary">
+    <div class="summary-head">
+      <h2>Your replay summary</h2>
+      <div class="sub" id="sum-sub"></div>
+    </div>
+    <div class="tiles" id="tiles"></div>
+    <div class="tablewrap"><table id="sum-table"></table></div>
+    <div class="exports">
+      <button class="take" id="x-csv">Export CSV</button>
+      <button id="x-json">Export JSON</button>
+      <button class="ghost" id="back-review">Back to the trades</button>
+    </div>
+  </section>
+</main>
+<footer>Your answers are saved in this browser. Export the CSV or JSON to send them to your coach.</footer>
+
+<!-- Trades can also be built in: put them here (same format as the pasted block) and the page skips the paste step. -->
+<script type="application/json" id="trades">
+{"student": "", "utc_offset": 0, "trades": []}
+</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+"use strict";
+const SAMPLE = {
+  "student": "Sample",
+  "utc_offset": 0,
+  "trades": [
+    {"n": 1, "coin": "ENA", "direction": "Short", "strategy": "MR Short", "entry_time": "2026-10-24 13:20", "exit_time": "2026-10-24 13:56", "utc_offset": 1, "entry": 0.19058, "stop": 0.19126, "target": 0.1892, "exit": 0.1892, "result": "WIN", "tradingview": "https://www.tradingview.com/x/GfQNzfNb/"},
+    {"n": 2, "coin": "ZEC", "direction": "Long", "strategy": "MR Long", "entry_time": "2026-10-27 16:12", "exit_time": "2026-10-27 16:27", "entry": 1288.44, "stop": 1276.0, "target": 1306.13, "exit": 1306.13, "result": "WIN", "tradingview": "https://www.tradingview.com/x/X6YmrjVC/"}
+  ]
+};
+const DATA_KEY = "zct-replay:data";                             // the trades last pasted in, so a reload resumes
+const LOOKBACK = 480;                                           // candles shown before the entry
+const PRE_GAP = 0.18;                                           // empty share on the right before the reveal: fixed, so it doesn't hint at the trade's length
+const TFS = [1, 5, 15, 30, 60];                                 // minutes; every source below supports all of them
+
+let DATA, OFF, TRADES, KEY, store, cur = 0;                     // set by boot() once trades are loaded
+function save() { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) {} }
+
+// ---------- trade fields ----------
+
+// a trade's own utc_offset wins over the journal-wide one (daylight saving can change it mid-journal)
+const offOf = t => (t && t.utc_offset != null && t.utc_offset !== "" ? Number(t.utc_offset) : OFF);
+function parseTime(s, off) {
+  const m = String(s || "").match(/(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})/);
+  return m ? Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5]) - off * 3600e3 : null;
+}
+function base(coin) {
+  return String(coin || "").toUpperCase().replace(/\.P$|PERP$|[-_/ ]?USDTM?$|[-_/ ]?USDC$|[-_/ ]?USD$/g, "").replace(/[^A-Z0-9]/g, "");
+}
+const dirSign = t => (String(t.direction).toLowerCase().startsWith("s") ? -1 : 1);
+function rOf(t) {
+  if (t.r != null && t.r !== "") return Number(t.r);
+  if (t.exit == null || t.stop == null || t.entry === t.stop) return null;
+  return ((t.exit - t.entry) / Math.abs(t.entry - t.stop)) * dirSign(t);
+}
+function resultOf(t) {
+  const s = String(t.result || "").toUpperCase();
+  if (s.startsWith("W")) return "WIN";
+  if (s.startsWith("L")) return "LOSS";
+  if (s.startsWith("B")) return "BREAKEVEN";
+  const r = rOf(t);
+  return r == null ? null : r > 0.05 ? "WIN" : r < -0.05 ? "LOSS" : "BREAKEVEN";
+}
+function fmt(p) {
+  if (p == null || isNaN(p)) return "-";
+  const d = Math.min(8, Math.max(2, 4 - Math.floor(Math.log10(Math.abs(p) || 1))));
+  return Number(p).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+const fmtR = r => (r == null || isNaN(r) ? "-" : (r > 0 ? "+" : "") + r.toFixed(2) + "R");
+function localLabel(ms, withDate, off) {
+  const d = new Date(ms + (off == null ? (view ? offOf(view.trade) : OFF) : off) * 3600e3);
+  const p = n => String(n).padStart(2, "0");
+  const hm = p(d.getUTCHours()) + ":" + p(d.getUTCMinutes());
+  return withDate ? d.getUTCDate() + " " + d.toLocaleString("en-US", { month: "short", timeZone: "UTC" }) + " " + d.getUTCFullYear() + ", " + hm : hm;
+}
+
+// ---------- candles: Binance first, then exchanges that still answer where Binance is blocked ----------
+
+async function getJSON(url, opts) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 12000);
+  try {
+    const r = await fetch(url, Object.assign({ signal: ctl.signal }, opts || {}));
+    if (!r.ok) throw new Error(r.status);
+    return await r.json();
+  } finally { clearTimeout(timer); }
+}
+// each source: chunk = max candles per request; get(base, tfMin, fromMs, toMs) -> [[openMs, o, h, l, c], ...]
+const SOURCES = [
+  { name: "Binance", chunk: 1500, get: async (b, tf, s, e) =>
+      (await getJSON(`https://fapi.binance.com/fapi/v1/klines?symbol=${b}USDT&interval=${tf < 60 ? tf + "m" : "1h"}&startTime=${s}&endTime=${e}&limit=1500`)) },
+  { name: "Bybit", chunk: 1000, get: async (b, tf, s, e) =>
+      (await getJSON(`https://api.bybit.com/v5/market/kline?category=linear&symbol=${b}USDT&interval=${tf}&start=${s}&end=${e}&limit=1000`)).result.list },
+  { name: "Bitget", chunk: 200, get: async (b, tf, s, e) =>
+      (await getJSON(`https://api.bitget.com/api/v2/mix/market/history-candles?symbol=${b}USDT&productType=usdt-futures&granularity=${tf < 60 ? tf + "m" : "1H"}&startTime=${s}&endTime=${e + 1}&limit=200`)).data },
+  { name: "OKX", chunk: 100, get: async (b, tf, s, e) =>
+      (await getJSON(`https://www.okx.com/api/v5/market/history-candles?instId=${b}-USDT-SWAP&bar=${tf < 60 ? tf + "m" : "1H"}&after=${e + 1}&before=${s - 1}&limit=100`)).data },
+  { name: "Gate", chunk: 1000, get: async (b, tf, s, e) =>
+      (await getJSON(`https://api.gateio.ws/api/v4/futures/usdt/candlesticks?contract=${b}_USDT&interval=${tf < 60 ? tf + "m" : "1h"}&from=${s / 1000}&to=${e / 1000}`))
+        .map(k => [k.t * 1000, k.o, k.h, k.l, k.c]) },
+  { name: "Hyperliquid", chunk: 5000, get: async (b, tf, s, e) =>
+      (await getJSON("https://api.hyperliquid.xyz/info", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "candleSnapshot", req: { coin: b, interval: tf < 60 ? tf + "m" : "1h", startTime: s, endTime: e } }) }))
+        .map(k => [k.t, k.o, k.h, k.l, k.c]) },
+];
+
+async function loadFrom(src, b, tf, s, e) {
+  const step = tf * 60e3, bars = new Map();
+  for (let from = s; from <= e; from += src.chunk * step) {
+    const to = Math.min(e, from + (src.chunk - 1) * step);
+    const rows = await src.get(b, tf, from, to);
+    for (const k of rows || []) {
+      const t = +k[0];
+      if (t >= s && t <= e) bars.set(t, { t, o: +k[1], h: +k[2], l: +k[3], c: +k[4] });
+    }
+  }
+  return [...bars.values()].sort((a, z) => a.t - z.t);
+}
+
+let cache = {};
+function candlesFor(i) {
+  if (!cache[i]) cache[i] = fetchTrade(TRADES[i]).catch(err => ({ error: err.message || String(err) }));
+  return cache[i];
+}
+async function fetchTrade(t) {
+  const entryMs = parseTime(t.entry_time, offOf(t));
+  if (entryMs == null) throw new Error("No entry time in the journal for this trade");
+  let exitMs = parseTime(t.exit_time, offOf(t));
+  if (exitMs == null || exitMs < entryMs) exitMs = entryMs + 60 * 60e3;
+  const tf = TFS.find(m => (exitMs - entryMs) / (m * 60e3) <= 180) || 60;
+  const step = tf * 60e3;
+  const entryOpen = Math.floor(entryMs / step) * step;
+  const exitOpen = Math.max(entryOpen, Math.floor(exitMs / step) * step);
+  const tail = Math.max(20, Math.round((exitOpen - entryOpen) / step * 0.25));
+  const s = entryOpen - LOOKBACK * step, e = Math.min(exitOpen + tail * step, Math.floor(Date.now() / step) * step);
+  const b = base(t.coin), tried = [];
+  for (const src of SOURCES) {
+    try {
+      const bars = await loadFrom(src, b, tf, s, e);
+      const ei = bars.findIndex(k => k.t === entryOpen);
+      if (ei > 5) {
+        let xi = bars.findIndex(k => k.t === exitOpen);
+        if (xi < ei) xi = bars.length - 1;
+        return { bars, tf, entryIdx: ei, exitIdx: xi, source: src.name };
+      }
+      tried.push(src.name + " (no candles at that time)");
+    } catch (err) { tried.push(src.name); }
+  }
+  throw new Error(`Couldn't load ${b} candles. Tried: ${tried.join(", ")}`);
+}
+
+// ---------- chart ----------
+
+const cv = document.getElementById("chart"), ctx = cv.getContext("2d");
+const C = { up: "#26a69a", down: "#ef5350", grid: "#eef1f1", axis: "#8a9494", ink: "#1a1a1a", entry: "#4c1d95", stop: "#c0392b", target: "#1a1a1a", marker: "#a87d00" };
+let view = null;   // {trade, d, shown, phase, yLo, yHi, anim}
+
+function rangeOf(bars, extra) {
+  let lo = Infinity, hi = -Infinity;
+  for (const k of bars) { lo = Math.min(lo, k.l); hi = Math.max(hi, k.h); }
+  for (const p of extra || []) if (p != null && !isNaN(p)) { lo = Math.min(lo, p); hi = Math.max(hi, p); }
+  const pad = (hi - lo) * 0.07 || hi * 0.01;
+  return [lo - pad, hi + pad];
+}
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (!view || !view.d || view.d.error) return;
+  const { d, trade } = view, bars = d.bars, N = bars.length;
+  const axisW = W < 500 ? 62 : 78, x0 = 8, x1 = W - axisW, yTop = 14, yBot = H - 26;
+  const slot = (x1 - x0) / view.nView, lo = view.yLo, hi = view.yHi;
+  const X = i => x0 + (i + 0.5) * slot, Y = p => yBot - (p - lo) / (hi - lo) * (yBot - yTop);
+  ctx.font = "12px 'PT Sans', sans-serif";
+
+  // grid + price axis
+  const ticks = niceTicks(lo, hi, 6);
+  ctx.textBaseline = "middle"; ctx.textAlign = "left";
+  for (const p of ticks) {
+    const y = Math.round(Y(p)) + 0.5;
+    ctx.strokeStyle = C.grid; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+    ctx.fillStyle = C.axis; ctx.fillText(fmt(p), x1 + 6, y);
+  }
+  // time axis: about one label per 110 px, only under candles already shown
+  ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+  const every = Math.max(1, Math.ceil(110 / slot));
+  for (let i = every; i < Math.min(view.shown, N); i += every) {
+    if (X(i) > x1 - 20) break;
+    ctx.fillStyle = C.axis; ctx.fillText(localLabel(bars[i].t), X(i), H - 8);
+  }
+
+  // candles
+  const bw = Math.max(1, slot * 0.64);
+  for (let i = 0; i < Math.min(view.shown, N); i++) {
+    const k = bars[i], col = k.c >= k.o ? C.up : C.down;
+    ctx.strokeStyle = ctx.fillStyle = col; ctx.lineWidth = Math.max(1, Math.min(1.5, slot * 0.3));
+    ctx.beginPath(); ctx.moveTo(X(i), Y(k.h)); ctx.lineTo(X(i), Y(k.l)); ctx.stroke();
+    const top = Y(Math.max(k.o, k.c)), bot = Y(Math.min(k.o, k.c));
+    ctx.fillRect(X(i) - bw / 2, top, bw, Math.max(1, bot - top));
+  }
+
+  const ex = X(d.entryIdx) - slot / 2;
+  if (view.phase === "pre") {
+    // where the entry candle will form
+    ctx.strokeStyle = C.marker; ctx.setLineDash([4, 4]); ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(ex, yTop); ctx.lineTo(ex, yBot); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = C.marker; ctx.textAlign = "left"; ctx.textBaseline = "top";
+    ctx.fillText("Your entry candle is next", ex + 6, yTop + 2);
+    return;
+  }
+  // entry / stop / target from the entry candle to the axis, each with a price tag on the axis
+  const lines = [[trade.target, C.target, "TP", true], [trade.stop, C.stop, "SL", true], [trade.entry, C.entry, "Entry", false]];
+  for (const [p, col, name, dashed] of lines) {
+    if (p == null || p === "" || isNaN(p)) continue;
+    const y = Math.round(Y(+p)) + 0.5;
+    ctx.strokeStyle = col; ctx.lineWidth = 1.4; ctx.setLineDash(dashed ? [6, 5] : []);
+    ctx.beginPath(); ctx.moveTo(ex, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.setLineDash([]);
+    tag(name + " " + fmt(+p), x1, y, col, axisW);
+  }
+  // exit, once price has got there
+  if (view.shown > d.exitIdx && trade.exit != null && trade.exit !== "") {
+    const x = X(d.exitIdx), y = Y(+trade.exit);
+    ctx.strokeStyle = C.ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.stroke();
+  }
+}
+function tag(text, x, y, col, w) {
+  ctx.font = "11px 'PT Sans', sans-serif";
+  const tw = Math.min(w - 4, ctx.measureText(text).width + 10);
+  ctx.fillStyle = col; ctx.fillRect(x + 2, y - 9, tw, 18);
+  ctx.fillStyle = "#fff"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  ctx.fillText(text, x + 7, y, tw - 8);
+  ctx.font = "12px 'PT Sans', sans-serif";
+}
+function niceTicks(lo, hi, n) {
+  const raw = (hi - lo) / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw);
+  const out = [];
+  for (let p = Math.ceil(lo / step) * step; p <= hi; p += step) out.push(p);
+  return out;
+}
+
+// replay the trade candle by candle, rescaling the price axis to include the plan
+function playReveal() {
+  const { d, trade } = view;
+  cancelAnimationFrame(view.anim);
+  view.phase = "reveal";
+  view.shown = d.entryIdx;
+  const [lo0, hi0, n0] = [view.yLo, view.yHi, view.nView];
+  const [lo1, hi1] = rangeOf(d.bars, [trade.entry, trade.stop, trade.target, trade.exit]);
+  const n1 = d.bars.length;
+  const total = d.bars.length - d.entryIdx, rate = Math.max(14, total / 6);  // about 6 s per trade
+  const t0 = performance.now();
+  const tick = now => {
+    const s = (now - t0) / 1000, e = Math.min(1, s / 0.45), ease = 1 - Math.pow(1 - e, 3);
+    view.yLo = lo0 + (lo1 - lo0) * ease; view.yHi = hi0 + (hi1 - hi0) * ease;
+    view.nView = n0 + (n1 - n0) * ease;
+    view.shown = Math.min(d.bars.length, d.entryIdx + 1 + Math.floor(s * rate));
+    draw();
+    if (view.shown < d.bars.length || e < 1) view.anim = requestAnimationFrame(tick);
+    else { view.phase = "done"; showResult(); }
+  };
+  view.anim = requestAnimationFrame(tick);
+}
+
+// ---------- flow ----------
+
+const $ = id => document.getElementById(id);
+
+// ---------- loading trades: built in, pasted, or the sample ----------
+
+function boot(data) {
+  DATA = data; OFF = Number(DATA.utc_offset || 0); TRADES = DATA.trades;
+  KEY = "zct-replay:" + (DATA.student || "") + ":" + TRADES.map(t => t.entry_time).join("|").slice(0, 200);
+  try { store = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { store = {}; }
+  store.decisions = store.decisions || {};
+  cache = {};
+  $("who").textContent = DATA.student || "";
+  $("setup").hidden = true;
+  stats();
+  show(Math.min(store.current || 0, TRADES.length - 1));
+}
+
+// ---------- reading the ZCT Trading Journal (Phase 4) export ----------
+
+// Trading Log tab: headers on row 5, trades from row 6; 0-based column indexes
+const COL = { entry_time: 1, tradingview: 4, strategy: 5, coin: 6, direction: 7, entry: 9, stop: 13, target: 14, exit: 17, exit_time: 18, result: 22 };
+const MAX_TRADES = 30;
+let journal = null;   // closed trades read from the file, times still as written in the journal
+
+const pad2 = n => String(n).padStart(2, "0");
+const wall = (y, mo, d, h, mi) => `${y}-${pad2(mo)}-${pad2(d)} ${pad2(h)}:${pad2(mi)}`;
+
+// a journal date cell -> "YYYY-MM-DD HH:MM" as written (Excel serial number, Date, or text)
+function cellTime(v, dayFirst) {
+  if (v == null || v === "") return null;
+  if (typeof v === "number" && v > 20000) {
+    const d = new Date(Math.round((v - 25569) * 864e5 / 6e4) * 6e4);   // serials are wall-clock days since 1899-12-30
+    return wall(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes());
+  }
+  if (v instanceof Date) return wall(v.getFullYear(), v.getMonth() + 1, v.getDate(), v.getHours(), v.getMinutes());
+  const s = String(v).trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})/);
+  if (m) return wall(+m[1], +m[2], +m[3], +m[4], +m[5]);
+  m = s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})[ ,T]+(\d{1,2}):(\d{2})(?::\d{2})?\s*(am|pm)?/i);
+  if (m) {
+    let [a, b, y, h, mi] = [+m[1], +m[2], +m[3], +m[4], +m[5]];
+    if (y < 100) y += 2000;
+    if (m[6]) h = (h % 12) + (/pm/i.test(m[6]) ? 12 : 0);
+    const [d, mo] = dayFirst ? [a, b] : [b, a];
+    return mo >= 1 && mo <= 12 ? wall(y, mo, d, h, mi) : null;
+  }
+  return null;
+}
+// text dates: day-first unless a first number above 12 never shows up and a second one does
+function guessDayFirst(values) {
+  let first = false, second = false;
+  for (const v of values) {
+    const m = typeof v === "string" && v.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-]\d{2,4}/);
+    if (m) { if (+m[1] > 12) first = true; if (+m[2] > 12) second = true; }
+  }
+  return first || !second;
+}
+function cellNum(v) {
+  if (v == null || v === "") return null;
+  if (typeof v === "number") return v;
+  const n = parseFloat(String(v).replace(/[^0-9.\-eE]/g, ""));
+  return isNaN(n) ? null : n;
+}
+
+function readJournal(buf, isCsv) {
+  const wb = isCsv ? XLSX.read(new TextDecoder().decode(buf), { type: "string", raw: true })
+                   : XLSX.read(buf, { type: "array" });
+  const name = wb.SheetNames.find(n => n.trim().toLowerCase() === "trading log")
+    || wb.SheetNames.find(n => /trading log/i.test(n) && !/calc/i.test(n)) || wb.SheetNames[0];
+  const ws = wb.Sheets[name], range = XLSX.utils.decode_range(ws["!ref"] || "A1");
+  range.s = { r: 0, c: 0 };   // count rows and columns from A1, so the column letters hold even when column A or row 1 is empty
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, range });
+  // the header row is normally row 5; look for it in case a sheet has a row more or less
+  let head = rows.slice(0, 12).findIndex(r => r && /entry/i.test(r[COL.entry_time] || "") && /coin|market/i.test(r[COL.coin] || ""));
+  if (head < 0) head = 4;
+  const body = rows.slice(head + 1).filter(r => r && r[COL.entry_time] != null && r[COL.coin]);
+  const dayFirst = guessDayFirst(body.map(r => r[COL.entry_time]).concat(body.map(r => r[COL.exit_time])));
+  const trades = [];
+  for (const r of body) {
+    const side = String(r[COL.direction] || "");
+    const t = {
+      coin: base(r[COL.coin]), direction: /short/i.test(side) ? "Short" : /long/i.test(side) ? "Long" : null,
+      strategy: r[COL.strategy] ? String(r[COL.strategy]).trim() : "",
+      entry_time: cellTime(r[COL.entry_time], dayFirst), exit_time: cellTime(r[COL.exit_time], dayFirst),
+      entry: cellNum(r[COL.entry]), stop: cellNum(r[COL.stop]), target: cellNum(r[COL.target]), exit: cellNum(r[COL.exit]),
+      result: r[COL.result] ? String(r[COL.result]).trim() : "",
+      tradingview: /^https?:\/\//.test(String(r[COL.tradingview] || "")) ? String(r[COL.tradingview]).trim() : "",
+    };
+    if (t.coin && t.direction && t.entry_time && t.entry != null && t.exit != null) trades.push(t);
+  }
+  trades.sort((a, z) => (a.entry_time < z.entry_time ? -1 : 1));
+  return { sheet: name, rows: body.length, trades };
+}
+
+// timezone choices: this computer's zone (follows daylight saving per trade), or a fixed offset
+function fillTimezones() {
+  const zone = (Intl.DateTimeFormat().resolvedOptions().timeZone || "").replace(/_/g, " ");
+  const opts = [`<option value="local">This computer's timezone${zone ? " (" + zone + ")" : ""}</option>`];
+  for (let h = -12; h <= 14; h += 0.5) {
+    if (h % 1 && ![-9.5, -3.5, 3.5, 4.5, 5.5, 6.5, 9.5, 10.5].includes(h)) continue;
+    const sign = h < 0 ? "−" : "+", a = Math.abs(h);
+    opts.push(`<option value="${h}">UTC${h ? sign + Math.floor(a) + (a % 1 ? ":30" : "") : ""}</option>`);
+  }
+  $("tz").innerHTML = opts.join("");
+}
+function localOffset(entryTime) {
+  const m = entryTime.match(/(\d+)-(\d+)-(\d+) (\d+):(\d+)/);
+  return -new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]).getTimezoneOffset() / 60;
+}
+function buildData() {
+  const tz = $("tz").value, picked = journal.trades.slice(-MAX_TRADES);
+  return {
+    student: $("name").value.trim(), utc_offset: tz === "local" ? 0 : Number(tz),
+    trades: picked.map((t, i) => Object.assign({ n: i + 1 }, t, tz === "local" ? { utc_offset: localOffset(t.entry_time) } : {})),
+  };
+}
+
+async function loadFile(file) {
+  $("paste-err").textContent = ""; $("found").textContent = ""; $("b-start").disabled = true;
+  if (!file) return;
+  if (typeof XLSX === "undefined") { $("paste-err").textContent = "The spreadsheet reader didn't load. Check your internet connection and reload the page."; return; }
+  $("drop-text").innerHTML = `<b>${esc(file.name)}</b> · reading…`;
+  try {
+    journal = readJournal(await file.arrayBuffer(), /\.csv$/i.test(file.name));
+    const n = journal.trades.length;
+    if (!n) throw new Error(`No closed trades found on the "${journal.sheet}" tab. Each trade needs an entry date & time (column B), coin (G), Long/Short (H), entry price (J) and exit price (R).`);
+    const used = journal.trades.slice(-MAX_TRADES);
+    $("found").textContent = `Found ${n} closed trade${n === 1 ? "" : "s"} on "${journal.sheet}". You'll replay the last ${used.length}: ` +
+      `${used[0].entry_time.slice(0, 10)} to ${used[used.length - 1].entry_time.slice(0, 10)}.`;
+    $("drop-text").innerHTML = `<b>${esc(file.name)}</b> · choose another file to replace it`;
+    if (!$("name").value) { const m = file.name.match(/Phase 4\s+([A-Z][a-z]+)/) || file.name.match(/^([A-Z][a-z]+)\s+ZC/); if (m) $("name").value = m[1]; }
+    $("b-start").disabled = false;
+  } catch (err) {
+    journal = null;
+    $("drop-text").innerHTML = `<b>Drop your journal here</b> or click to choose the file`;
+    $("paste-err").textContent = err.message.includes("No closed trades") ? err.message : "That file couldn't be read as a ZCT Trading Journal. Download it from Google Sheets with File → Download → Microsoft Excel (.xlsx) and try again.";
+  }
+}
+
+function showSetup() {
+  cancelAnimationFrame(view && view.anim);
+  $("setup").hidden = false;
+  $("review").style.display = "none"; $("summary").classList.remove("show");
+  $("paste-err").textContent = "";
+}
+
+async function show(i) {
+  cur = i; store.current = i; save();
+  const t = TRADES[i], dec = store.decisions[i];
+  $("setup").hidden = true;
+  $("review").style.display = ""; $("summary").classList.remove("show");
+  $("m-n").textContent = `Trade ${i + 1} of ${TRADES.length}`;
+  $("m-coin").textContent = base(t.coin) + "/USDT";
+  $("m-dir").textContent = t.direction || "-"; $("m-dir").className = "pill " + (dirSign(t) > 0 ? "Long" : "Short");
+  $("m-strat").textContent = t.strategy || "No strategy tag";
+  const em = parseTime(t.entry_time, offOf(t));
+  $("m-when").textContent = em ? localLabel(em, true, offOf(t)) : t.entry_time;
+  $("result").classList.remove("show");
+  $("decide").style.display = dec ? "none" : "";
+  $("b-prev").disabled = i === 0;
+  $("b-unavail").hidden = true;
+  $("overlay").hidden = false; $("overlay").textContent = "Loading candles…"; $("src").textContent = "";
+  view = null; draw();
+  setButtons(false);
+
+  const d = await candlesFor(i);
+  if (cur !== i) return;
+  if (i + 1 < TRADES.length) candlesFor(i + 1);           // get the next one ready
+  if (d.error) {
+    $("overlay").textContent = d.error + ". Check the coin name and the entry time in your journal.";
+    $("b-unavail").hidden = !!dec;
+    return;
+  }
+  $("overlay").hidden = true;
+  const pre = d.bars.slice(0, d.entryIdx);
+  const [lo, hi] = rangeOf(pre);
+  view = { trade: t, d, shown: d.entryIdx, phase: "pre", yLo: lo, yHi: hi, nView: d.entryIdx / (1 - PRE_GAP) };
+  srcLine(t, d);
+  if (dec) { playReveal(); } else { draw(); setButtons(true); }
+}
+
+function srcLine(t, d) {
+  const k = d.bars[d.entryIdx], parts = [`${d.source} candles · ${d.tf} min`];
+  const e = Number(t.entry), tol = (k.h - k.l) * 0.25 + e * 0.0005;
+  if (!isNaN(e) && (e < k.l - tol || e > k.h + tol))
+    parts.push(`<span class="warn">Your entry ${fmt(e)} isn't inside the ${localLabel(k.t)} candle (${fmt(k.l)} to ${fmt(k.h)}) on ${d.source}. The time, the timezone or the exchange may differ.</span>`);
+  $("src").innerHTML = parts.join(" · ");
+}
+function setButtons(on) { $("b-take").disabled = $("b-skip").disabled = !on; }
+
+function decide(take) {
+  if (!view || view.phase !== "pre" || store.decisions[cur]) return;
+  store.decisions[cur] = { take, at: new Date().toISOString() };
+  save(); stats();
+  $("decide").style.display = "none";
+  playReveal();
+}
+
+function showResult() {
+  const t = TRADES[cur], dec = store.decisions[cur] || {}, res = resultOf(t), r = rOf(t);
+  const big = $("r-big");
+  big.className = "rbig " + (res || "");
+  big.textContent = (res === "WIN" ? "Win" : res === "LOSS" ? "Loss" : res === "BREAKEVEN" ? "Breakeven" : "Result") + "  " + fmtR(r);
+  const word = res === "WIN" ? "won" : res === "LOSS" ? "lost" : "finished flat";
+  $("r-verdict").textContent = dec.take
+    ? `You said you'd take it again. It ${word} (${fmtR(r)}).`
+    : dec.take === false
+      ? `You said you wouldn't take it again. It ${word} (${fmtR(r)}).`
+      : "";
+  $("r-plan").textContent = `Entry ${fmt(+t.entry)} · Stop ${fmt(+t.stop)} · Target ${fmt(+t.target)} · Exit ${fmt(+t.exit)}` +
+    (t.exit_time && parseTime(t.exit_time, offOf(t)) ? ` at ${localLabel(parseTime(t.exit_time, offOf(t)), false, offOf(t))}` : "");
+  $("r-links").innerHTML = t.tradingview ? `<a href="${encodeURI(t.tradingview)}" target="_blank" rel="noopener">Your TradingView chart of this trade</a>` : "";
+  $("b-next").textContent = cur + 1 < TRADES.length ? "Next trade" : "See your summary";
+  $("result").classList.add("show");
+}
+
+function next() {
+  const open = TRADES.findIndex((_, i) => i > cur && !store.decisions[i]);
+  if (cur + 1 < TRADES.length) show(open > -1 ? open : cur + 1);
+  else summary();
+}
+
+function stats() {
+  const ds = Object.values(store.decisions);
+  $("s-done").textContent = ds.length; $("s-total").textContent = TRADES.length;
+  $("s-take").textContent = ds.filter(d => d.take).length;
+  $("s-skip").textContent = ds.filter(d => d.take === false).length;
+  $("prog").style.width = (ds.length / TRADES.length * 100) + "%";
+}
+
+// ---------- summary + export ----------
+
+function rows() {
+  return TRADES.map((t, i) => {
+    const d = store.decisions[i];
+    return { n: i + 1, coin: base(t.coin), direction: t.direction, strategy: t.strategy || "", entry_time: t.entry_time,
+      entry: t.entry, stop: t.stop, target: t.target, exit: t.exit, r: rOf(t), result: resultOf(t),
+      decision: d ? (d.unavailable ? "chart unavailable" : d.take ? "take again" : "wouldn't take") : "", decided_at: d ? d.at : "" };
+  });
+}
+function summary() {
+  if (!TRADES) return;
+  $("review").style.display = "none"; $("summary").classList.add("show");
+  const rs = rows(), done = rs.filter(r => r.decision === "take again" || r.decision === "wouldn't take");
+  const take = done.filter(r => r.decision === "take again"), skip = done.filter(r => r.decision === "wouldn't take");
+  const sumR = a => a.reduce((s, r) => s + (r.r || 0), 0);
+  const wl = a => `${a.filter(r => r.result === "WIN").length} won · ${a.filter(r => r.result === "LOSS").length} lost`;
+  $("sum-sub").textContent = `${DATA.student ? DATA.student + " · " : ""}${done.length} of ${TRADES.length} trades reviewed`;
+  $("tiles").innerHTML = [
+    ["Take again", take.length, `${wl(take)} · ${fmtR(sumR(take))}`],
+    ["Wouldn't take again", skip.length, `${wl(skip)} · ${fmtR(sumR(skip))}`],
+    ["Actual result, all reviewed", fmtR(sumR(done)), wl(done)],
+    ["Only the trades you'd take again", fmtR(sumR(take)), `${fmtR(sumR(take) - sumR(done))} vs. what you actually made`],
+  ].map(([k, v, d]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d}</div></div>`).join("");
+  $("sum-table").innerHTML = "<tr><th>#</th><th>Coin</th><th>Side</th><th>Strategy</th><th>Entry time</th><th>Your call</th><th>Result</th></tr>" +
+    rs.map(r => `<tr><td>${r.n}</td><td>${esc(r.coin)}</td><td>${esc(r.direction)}</td><td>${esc(r.strategy)}</td><td>${esc(r.entry_time)}</td>` +
+      `<td>${r.decision || "-"}</td><td class="r ${r.result || ""}">${r.decision ? (r.result || "-") + " " + fmtR(r.r) : "hidden"}</td></tr>`).join("");
+}
+const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function download(name, text, type) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const fileBase = () => "zct-trade-replay-" + (DATA.student || "student").replace(/[^\w-]+/g, "-").toLowerCase();
+$("x-json").onclick = () => download(fileBase() + ".json", JSON.stringify({ student: DATA.student, exported_at: new Date().toISOString(), trades: rows() }, null, 2), "application/json");
+$("x-csv").onclick = () => {
+  const rs = rows(), cols = Object.keys(rs[0]);
+  const cell = v => (v == null ? "" : /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v));
+  download(fileBase() + ".csv", [cols.join(",")].concat(rs.map(r => cols.map(c => cell(r[c])).join(","))).join("\n"), "text/csv");
+};
+
+// ---------- wiring ----------
+
+$("b-take").onclick = () => decide(true);
+$("b-skip").onclick = () => decide(false);
+$("b-next").onclick = next;
+$("b-prev").onclick = () => cur > 0 && show(cur - 1);
+$("b-replay").onclick = () => view && view.d && playReveal();
+$("b-unavail").onclick = () => { store.decisions[cur] = { unavailable: true, at: new Date().toISOString() }; save(); stats(); next(); };
+$("to-summary").onclick = summary;
+$("back-review").onclick = () => show(cur);
+$("to-setup").onclick = showSetup;
+$("b-sample").onclick = () => boot(SAMPLE);
+$("b-start").onclick = () => {
+  if (!journal) return;
+  const data = buildData();
+  try { localStorage.setItem(DATA_KEY, JSON.stringify(data)); } catch (e) {}
+  boot(data);
+};
+$("file").onchange = e => loadFile(e.target.files[0]);
+const drop = $("drop");
+drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); loadFile(e.dataTransfer.files[0]); });
+fillTimezones();
+document.addEventListener("keydown", e => {
+  if (!TRADES || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || $("review").style.display === "none") return;
+  if (e.key === "1") decide(true);
+  else if (e.key === "2") decide(false);
+  else if (e.key === "Enter" && $("result").classList.contains("show")) next();
+});
+window.addEventListener("resize", draw);
+if (document.fonts) document.fonts.ready.then(draw);
+
+// built-in trades first, then the last pasted block (so a reload resumes), else ask for a paste
+const builtIn = JSON.parse($("trades").textContent);
+let saved = null;
+try { saved = JSON.parse(localStorage.getItem(DATA_KEY) || "null"); } catch (e) {}
+if (builtIn.trades && builtIn.trades.length) boot(builtIn);
+else if (saved && saved.trades && saved.trades.length) boot(saved);
+else showSetup();
+</script>
+</body>
+</html>
