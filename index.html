@@ -327,14 +327,18 @@ async function fetchTrade(t) {
     try {
       const bars = await loadFrom(src, b, tf, s, e);
       const ei = bars.findIndex(k => k.t === entryOpen);
-      // a trade on the other side of a daylight-saving change sits an hour off: if the entry and exit
-      // fit an hour either way and not at this offset, move this trade's offset and load it again
-      if (ei > 5 && tf === 1 && !t._dst) {
-        const at = new Map(bars.map(k => [k.t, k])), w0 = parseTime(t.entry_time, 0), x0 = parseTime(t.exit_time, 0);
-        const fits = h => priceFits(at, w0, Number(t.entry), h) && priceFits(at, x0, Number(t.exit), h) !== false;
-        if (!fits(offOf(t))) {
-          const h = [offOf(t) + 1, offOf(t) - 1].find(fits);
-          if (h != null) { t.utc_offset = h; t._dst = true; return fetchTrade(t); }
+      // safety net when a trade's times don't match the candles (wrong timezone picked, a daylight-saving change,
+      // a trade logged from another timezone): look across every offset for one where the entry AND the exit fit
+      // their candles, move this trade to it, and load it again. The source line says it was shifted.
+      if (ei > 5 && tf === 1 && t._shift == null) {
+        const w0 = parseTime(t.entry_time, 0), x0 = parseTime(t.exit_time, 0);
+        const fitsIn = at => h => priceFits(at, w0, Number(t.entry), h) && priceFits(at, x0, Number(t.exit), h) !== false;
+        if (!fitsIn(new Map(bars.map(k => [k.t, k])))(offOf(t))) {
+          const span = x0 && x0 > w0 ? Math.min(x0 - w0, 3 * 3600e3) : 0;
+          const wide = await loadFrom(src, b, 1, Math.floor((w0 - 14.5 * 3600e3) / 6e4) * 6e4, Math.floor((w0 + 12.5 * 3600e3 + span) / 6e4) * 6e4);
+          const ok = OFFSETS.filter(fitsIn(new Map(wide.map(k => [k.t, k])))).sort((p, q) => Math.abs(p - offOf(t)) - Math.abs(q - offOf(t)));
+          t._shift = ok.length ? ok[0] - offOf(t) : 0;
+          if (ok.length) { t.utc_offset = ok[0]; return fetchTrade(t); }
         }
       }
       if (ei > 5) {
@@ -783,18 +787,19 @@ async function useJournal(read) {
     const used = journal.trades.slice(-MAX_TRADES);
     $("found").textContent = `Found ${n} closed trade${n === 1 ? "" : "s"} on "${journal.sheet}". You'll replay the last ${used.length}: ` +
       `${used[0].entry_time.slice(0, 10)} to ${used[used.length - 1].entry_time.slice(0, 10)}.`;
-    $("b-start").disabled = false;
+    // Start waits for the timezone (up to 20 s), so the replay never begins on a guessed one
     const mine = journal;
     $("tz-note").textContent = "Working out your journal's timezone from your trades…";
-    detectOffset(used).then(r => {
-      if (journal !== mine) return;
-      if (r.matches) {
-        $("tz").value = String(r.offset);
-        $("tz-note").textContent = `Detected ${utcName(r.offset)}: at that timezone your entry and exit prices match the candles on ${r.matches} of ${r.checked} recent trades. Change it if that's wrong.`;
-      } else {
-        $("tz-note").textContent = "Couldn't work out the timezone from your trades. Choose the one your journal times are in.";
-      }
-    }).catch(() => { $("tz-note").textContent = ""; });
+    const timeout = new Promise(res => setTimeout(() => res(null), 20000));
+    const r = await Promise.race([detectOffset(used).catch(() => null), timeout]);
+    if (journal !== mine) return false;
+    if (r && r.matches) {
+      $("tz").value = String(r.offset);
+      $("tz-note").textContent = `Detected ${utcName(r.offset)}: at that timezone your entry and exit prices match the candles on ${r.matches} of ${r.checked} recent trades. Change it if that's wrong.`;
+    } else {
+      $("tz-note").textContent = "Couldn't work out the timezone from your trades. Choose the one your journal times are in.";
+    }
+    $("b-start").disabled = false;
     return true;
   } catch (err) {
     journal = null; $("found").textContent = "";
@@ -869,6 +874,7 @@ function srcLine(t, d) {
   if (d.levels && d.levels.length)
     parts.push("Systematic level: " + d.levels.map(l => `<b>${esc(l.name)}</b> ${fmt(l.price)} (${esc(l.what)})`).join(", "));
   t.level = (d.levels || []).map(l => l.name + " " + l.price).join("; ");
+  if (t._shift) parts.push(`This trade's times didn't match the candles at ${utcName(offOf(t) - t._shift)}, so it's shown at ${utcName(offOf(t))}, where your entry and exit both match`);
   const e = Number(t.entry), tol = (k.h - k.l) * 0.25 + e * 0.0005;
   if (!isNaN(e) && (e < k.l - tol || e > k.h + tol))
     parts.push(`<span class="warn">Your entry ${fmt(e)} isn't inside the ${localLabel(k.t)} candle (${fmt(k.l)} to ${fmt(k.h)}) on ${d.source}. The time, the timezone or the exchange may differ.</span>`);
