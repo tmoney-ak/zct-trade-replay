@@ -767,7 +767,9 @@ const utcName = h => "UTC" + (h ? (h < 0 ? "−" : "+") + Math.floor(Math.abs(h)
 function fillTimezones() {
   const zone = (Intl.DateTimeFormat().resolvedOptions().timeZone || "").replace(/_/g, " ");
   $("tz").innerHTML = `<option value="local">This computer's timezone${zone ? " (" + zone + ")" : ""}</option>` +
-    OFFSETS.map(h => `<option value="${h}">${utcName(h)}</option>`).join("");
+    `<optgroup label="Changes with daylight saving">` +
+    Object.entries(ZONES).map(([z, label]) => `<option value="zone:${z}">${label}</option>`).join("") + `</optgroup>` +
+    `<optgroup label="Fixed offset all year">` + OFFSETS.map(h => `<option value="${h}">${utcName(h)}</option>`).join("") + `</optgroup>`;
 }
 
 // How far a trade's journal prices miss the 1-minute candles at their journal times, read at UTC offset h:
@@ -788,12 +790,37 @@ function bestOffsets(at, t, near) {
   if (!(best <= MATCH)) return [];
   return miss.filter(m => m[1] <= best + 0.0005).map(m => m[0]).sort((p, q) => Math.abs(p - near) - Math.abs(q - near));
 }
-// the journal's timezone, found from the trades themselves: the UTC offset that puts the most entries
-// (and exits) inside the candle at the journal's time, checked on the 6 most recent trades. Each trade counts
-// once for every offset that fits on Binance, Bybit or Bitget, so one exchange's price gap can't tip the result
-// (and where Binance and Bybit are blocked, as in the US, Bitget still answers).
+// Timezones with daylight saving: a journal kept in one of them changes offset mid-journal (Europe on the last
+// Sunday of October, the US on the first Sunday of November), so each trade gets the offset for its own date.
+const ZONES = {
+  "Europe/London": "UK / Portugal (UTC+0 winter, UTC+1 summer)",
+  "Europe/Berlin": "Central Europe (UTC+1 winter, UTC+2 summer)",
+  "Europe/Athens": "Eastern Europe (UTC+2 winter, UTC+3 summer)",
+  "America/New_York": "US / Canada Eastern (UTC−5 winter, UTC−4 summer)",
+  "America/Chicago": "US Central (UTC−6 winter, UTC−5 summer)",
+  "America/Denver": "US Mountain (UTC−7 winter, UTC−6 summer)",
+  "America/Los_Angeles": "US Pacific (UTC−8 winter, UTC−7 summer)",
+  "Australia/Sydney": "Sydney / Melbourne (UTC+10 winter, UTC+11 summer)",
+  "Pacific/Auckland": "New Zealand (UTC+12 winter, UTC+13 summer)",
+};
+// a zone's offset from UTC (hours) at a journal wall time
+function zoneOffset(zone, wallMs) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "2-digit",
+    day: "2-digit", hour: "2-digit", minute: "2-digit" }).formatToParts(new Date(wallMs)).map(x => [x.type, x.value]));
+  return Math.round((Date.UTC(+p.year, p.month - 1, +p.day, +p.hour, +p.minute) - wallMs) / 9e5) / 4;
+}
+// the offset a timezone choice gives one trade: "local" (this computer), "zone:<name>", or a fixed number
+function offsetFor(tz, entryTime) {
+  if (tz === "local") return localOffset(entryTime);
+  if (String(tz).startsWith("zone:")) return zoneOffset(tz.slice(5), parseTime(entryTime, 0));
+  return Number(tz);
+}
+
+// The journal's timezone, found from the trades themselves. Six trades spread across the whole journal are
+// checked (so a daylight-saving change inside it shows up) on Binance, Bybit and Bitget; each trade votes for the
+// offsets where its entry and exit miss the candles least. A daylight-saving zone wins only when it explains
+// more trades than any fixed offset; otherwise the fixed offset does.
 async function detectOffset(trades) {
-  const score = new Map(OFFSETS.map(h => [h, 0]));
   const pick = $("exch").value;
   const srcs = sourceOrder(pick).filter(x => ["Binance", "Bybit", "Bitget", pick].includes(x.name));
   const one = async t => {
@@ -813,15 +840,18 @@ async function detectOffset(trades) {
       OFFSETS.forEach(h => miss.set(h, Math.min(miss.get(h), tradeMiss(at, t, h))));
     }
     const best = Math.min(...miss.values());
-    if (best <= MATCH) miss.forEach((m, h) => { if (m <= best + 0.0005) score.set(h, score.get(h) + 1); });
-    return any;
+    return any ? { e0, ok: best <= MATCH ? new Set([...miss].filter(([, m]) => m <= best + 0.0005).map(([h]) => h)) : new Set() } : null;
   };
-  let checked = 0;
-  for (const t of trades.slice(-6)) if (await one(t).catch(() => false)) checked++;
+  const n = trades.length, picks = [...new Set([0, 1, 2, 3, 4, 5].map(i => Math.round(i * (n - 1) / 5)))].map(i => trades[i]);
+  const votes = [];
+  for (const t of picks) { const v = await one(t).catch(() => null); if (v) votes.push(v); }
   const local = -new Date().getTimezoneOffset() / 60;
-  // most matches wins; on a tie prefer whole hours, then the offset closest to this computer's
-  const best = [...score].sort((p, q) => q[1] - p[1] || Math.abs(p[0] % 1) - Math.abs(q[0] % 1) || Math.abs(p[0] - local) - Math.abs(q[0] - local))[0];
-  return { offset: best[0], matches: best[1], checked };
+  const fixed = OFFSETS.map(h => [h, votes.filter(v => v.ok.has(h)).length])
+    // most matches wins; on a tie prefer whole hours, then the offset closest to this computer's
+    .sort((p, q) => q[1] - p[1] || Math.abs(p[0] % 1) - Math.abs(q[0] % 1) || Math.abs(p[0] - local) - Math.abs(q[0] - local))[0];
+  const zone = Object.keys(ZONES).map(z => [z, votes.filter(v => v.ok.has(zoneOffset(z, v.e0))).length]).sort((p, q) => q[1] - p[1])[0];
+  if (zone[1] > fixed[1]) return { tz: "zone:" + zone[0], label: ZONES[zone[0]], matches: zone[1], checked: votes.length };
+  return { tz: String(fixed[0]), label: utcName(fixed[0]), matches: fixed[1], checked: votes.length };
 }
 function localOffset(entryTime) {
   const m = entryTime.match(/(\d+)-(\d+)-(\d+) (\d+):(\d+)/);
@@ -830,8 +860,8 @@ function localOffset(entryTime) {
 function buildData() {
   const tz = $("tz").value, picked = journal.trades.slice(-MAX_TRADES);
   return {
-    student: $("name").value.trim(), utc_offset: tz === "local" ? 0 : Number(tz), exchange: $("exch").value,
-    trades: picked.map((t, i) => Object.assign({ n: i + 1 }, t, tz === "local" ? { utc_offset: localOffset(t.entry_time) } : {})),
+    student: $("name").value.trim(), utc_offset: /^-?[\d.]+$/.test(tz) ? Number(tz) : 0, exchange: $("exch").value,
+    trades: picked.map((t, i) => Object.assign({ n: i + 1 }, t, { utc_offset: offsetFor(tz, t.entry_time) })),
   };
 }
 
@@ -852,8 +882,8 @@ async function useJournal(read) {
     const r = await Promise.race([detectOffset(used).catch(() => null), timeout]);
     if (journal !== mine) return false;
     if (r && r.matches) {
-      $("tz").value = String(r.offset);
-      $("tz-note").textContent = `Detected ${utcName(r.offset)}: at that timezone your entry and exit prices match the candles on ${r.matches} of ${r.checked} recent trades. Change it if that's wrong.`;
+      $("tz").value = r.tz;
+      $("tz-note").textContent = `Detected ${r.label}: at that timezone your entry and exit prices match the candles on ${r.matches} of ${r.checked} trades checked. Change it if that's wrong.`;
     } else {
       $("tz-note").textContent = "Couldn't work out the timezone from your trades. Choose the one your journal times are in.";
     }
