@@ -354,6 +354,10 @@ async function fetchTrade(t) {
     let xi = bars.findIndex(k => k.t === exitOpen);
     if (xi < ei) xi = bars.length - 1;
     const d = { bars, tf, entryIdx: ei, exitIdx: xi, source: src.name };
+    // Anchor the plan to the entry candle: if the journal's entry isn't inside it (another exchange's price),
+    // the entry snaps onto the candle and stop, target and exit keep their % distance from it.
+    const k = bars[ei], e0p = Number(t.entry);
+    d.scale = e0p > 0 ? Math.min(Math.max(e0p, k.l), k.h) / e0p : 1;
     try { d.levels = await findLevels(t, src, b, d, entryMs); } catch (err) { d.levels = []; }
     return d;
   };
@@ -427,7 +431,7 @@ async function findLevels(t, src, b, d, entryMs) {
   }
 
   // which of them the trade used
-  const e = Number(t.entry), s = t.stop == null || t.stop === "" ? NaN : Number(t.stop);
+  const e = Number(t.entry) * (d.scale || 1), s = t.stop == null || t.stop === "" ? NaN : Number(t.stop) * (d.scale || 1);
   const ranges = bars.slice(Math.max(0, entryIdx - 60), entryIdx).map(k => k.h - k.l).sort((x, y) => x - y);
   const tol = Math.max(e * 0.001, (ranges[ranges.length >> 1] || 0) * 0.5);
   const lo = isNaN(s) ? e : Math.min(e, s), hi = isNaN(s) ? e : Math.max(e, s);
@@ -455,6 +459,9 @@ async function findLevels(t, src, b, d, entryMs) {
 const cv = document.getElementById("chart"), ctx = cv.getContext("2d");
 const C = { up: "#26a69a", down: "#ef5350", grid: "#eef1f1", axis: "#8a9494", ink: "#1a1a1a", entry: "#4c1d95", stop: "#c0392b", target: "#1a1a1a", marker: "#a87d00", level: "#4a4a4a" };
 let view = null;   // {trade, d, shown, phase, yLo, yHi, anim}
+
+// a journal price placed on these candles: the same % from the entry as in the journal (see d.scale)
+const onChart = (p, d) => (p == null || p === "" || isNaN(p) ? NaN : Number(p) * (d.scale || 1));
 
 function rangeOf(bars, extra) {
   let lo = Infinity, hi = -Infinity;
@@ -499,7 +506,7 @@ function draw() {
   const first = Math.max(0, Math.floor(dLo)), last = Math.min(view.shown, N, Math.ceil(dHi) + 1);
   let lo = view.yLo, hi = view.yHi;
   if (view.zoom) {   // fit the price axis to what's in view
-    const plan = view.phase === "pre" ? [] : [trade.entry, trade.stop, trade.target].map(p => (p == null || p === "" ? NaN : Number(p)));
+    const plan = view.phase === "pre" ? [] : [trade.entry, trade.stop, trade.target].map(p => onChart(p, d));
     [lo, hi] = rangeOf(bars.slice(first, Math.max(first + 1, last)), plan);
   }
   geom = { x0, x1, dLo, dHi };
@@ -563,7 +570,7 @@ function draw() {
   const lines = [[trade.target, C.target, "TP", true], [trade.stop, C.stop, "SL", true], [trade.entry, C.entry, "Entry", false]];
   for (const [p, col, name, dashed] of lines) {
     if (p == null || p === "" || isNaN(p)) continue;
-    const y = Math.round(Y(+p)) + 0.5;
+    const y = Math.round(Y(onChart(p, d))) + 0.5;   // drawn where the plan sits on these candles; the tag keeps the journal's price
     if (y < yTop - 2 || y > yBot + 2) continue;
     ctx.strokeStyle = col; ctx.lineWidth = 1.4; ctx.setLineDash(dashed ? [6, 5] : []);
     ctx.beginPath(); ctx.moveTo(Math.max(ex, x0), y); ctx.lineTo(x1, y); ctx.stroke(); ctx.setLineDash([]);
@@ -571,7 +578,7 @@ function draw() {
   }
   // exit, once price has got there
   if (view.shown > d.exitIdx && trade.exit != null && trade.exit !== "") {
-    const x = X(d.exitIdx), y = Y(+trade.exit);
+    const x = X(d.exitIdx), y = Y(onChart(trade.exit, d));
     ctx.strokeStyle = C.ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.stroke();
   }
   ctx.restore();
@@ -608,7 +615,7 @@ function playReveal() {
   view.shown = d.entryIdx;
   view.zoom = null; $("z-reset").hidden = true;   // the replay plays on the whole chart; zoom in again after
   const [lo0, hi0, n0] = [view.yLo, view.yHi, view.nView];
-  const [lo1, hi1] = rangeOf(d.bars, [trade.entry, trade.stop, trade.target, trade.exit]);
+  const [lo1, hi1] = rangeOf(d.bars, [trade.entry, trade.stop, trade.target, trade.exit].map(p => onChart(p, d)));
   const n1 = d.bars.length;
   const total = d.bars.length - d.entryIdx, rate = Math.max(14, total / 6);  // about 6 s per trade
   const t0 = performance.now();
@@ -935,9 +942,12 @@ function srcLine(t, d) {
     parts.push("Systematic level: " + d.levels.map(l => `<b>${esc(l.name)}</b> ${fmt(l.price)} (${esc(l.what)})`).join(", "));
   t.level = (d.levels || []).map(l => l.name + " " + l.price).join("; ");
   if (t._shift) parts.push(`Times read as ${utcName(offOf(t))} for this trade: that's where your entry and exit match the candles (not ${utcName(offOf(t) - t._shift)})`);
-  const e = Number(t.entry), tol = (k.h - k.l) * 0.25 + e * 0.0005;
-  if (!isNaN(e) && (e < k.l - tol || e > k.h + tol))
-    parts.push(`<span class="warn">Your entry ${fmt(e)} isn't inside the ${localLabel(k.t)} candle (${fmt(k.l)} to ${fmt(k.h)}) on ${d.source}. The time, the timezone or the exchange may differ.</span>`);
+  // a small gap is another exchange's price: the plan is anchored to the candle. A big one means the time is likely off.
+  const gap = Math.abs(1 - (d.scale || 1));
+  if (gap > MATCH)
+    parts.push(`<span class="warn">Your entry ${fmt(Number(t.entry))} is ${(gap * 100).toFixed(1)}% away from the ${localLabel(k.t)} candle (${fmt(k.l)} to ${fmt(k.h)}) on ${d.source}, so the journal time may be off. Entry, stop and target are drawn on that candle at the same % distances as in your journal.</span>`);
+  else if (gap > 0)
+    parts.push(`Plan drawn on the ${localLabel(k.t)} candle at the same % distances as your journal (${d.source}'s price differs slightly from your exchange)`);
   $("src").innerHTML = parts.join(" · ");
 }
 function setButtons(on) { $("b-take").disabled = $("b-skip").disabled = !on; }
