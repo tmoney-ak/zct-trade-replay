@@ -939,6 +939,7 @@ function rows() {
 }
 function summary() {
   if (!TRADES) return;
+  $("setup").hidden = true;
   $("review").style.display = "none"; $("summary").classList.add("show");
   const rs = rows(), done = rs.filter(r => r.decision === "take again" || r.decision === "wouldn't take");
   const take = done.filter(r => r.decision === "take again"), skip = done.filter(r => r.decision === "wouldn't take");
