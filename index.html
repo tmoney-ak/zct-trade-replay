@@ -27,7 +27,11 @@ main{max-width:1040px;margin:0 auto;padding:18px 16px 40px}
 .pill.strat{color:var(--ink);background:#f1f3f3}
 .meta .when{color:var(--muted);font-size:13px}
 .chartwrap{position:relative;background:#fff}
-canvas{display:block;width:100%;height:420px}
+canvas{display:block;width:100%;height:420px;touch-action:pan-y;cursor:grab}
+canvas.dragging{cursor:grabbing}
+.zoombar{position:absolute;left:14px;top:10px;display:flex;gap:6px}
+.zoombar button{padding:4px 10px;font-size:15px;line-height:1.2;background:rgba(255,255,255,.92)}
+.zoombar #z-in,.zoombar #z-out{width:34px;font-weight:700}
 .overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;color:var(--muted);background:rgba(255,255,255,.85)}
 .overlay[hidden]{display:none}
 .src{padding:6px 18px;font-size:12px;color:var(--muted);border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:4px 14px}
@@ -147,6 +151,11 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40p
     </div>
     <div class="chartwrap">
       <canvas id="chart"></canvas>
+      <div class="zoombar">
+        <button id="z-in" title="Zoom in" aria-label="Zoom in">+</button>
+        <button id="z-out" title="Zoom out" aria-label="Zoom out">−</button>
+        <button id="z-reset" hidden>Reset zoom</button>
+      </div>
       <div class="overlay" id="overlay">Loading candles…</div>
     </div>
     <div class="src" id="src"></div>
@@ -351,6 +360,28 @@ function rangeOf(bars, extra) {
   return [lo - pad, hi + pad];
 }
 
+// zoom: view.zoom = {lo, hi} in candle positions, or null for the whole chart. Before the decision the
+// right edge can't pass the entry gap, so zooming never shows what came after the entry.
+const MIN_BARS = 20;
+const zoomMax = () => (view.phase === "pre" ? view.nView : view.d.bars.length);
+function setZoom(lo, hi) {
+  const max = zoomMax();
+  const w = Math.min(Math.max(hi - lo, MIN_BARS), max);
+  // before the decision the empty space after the entry keeps the same share of the view at any zoom
+  const right = view.phase === "pre" ? view.d.entryIdx + PRE_GAP * w : max;
+  lo = Math.min(Math.max(lo, 0), right - w);
+  view.zoom = w >= max - 0.5 ? null : { lo, hi: lo + w };
+  $("z-reset").hidden = !view.zoom;
+  draw();
+}
+function zoomBy(f, anchor) {   // anchor: 0..1 across the plot; stays put while zooming
+  if (!view || !view.d || view.d.error || view.anim && view.phase === "reveal") return;
+  const lo = view.zoom ? view.zoom.lo : 0, hi = view.zoom ? view.zoom.hi : zoomMax();
+  const at = lo + (hi - lo) * anchor, w = (hi - lo) * f;
+  setZoom(at - w * anchor, at - w * anchor + w);
+}
+let geom = null;   // plot area of the last draw, for mapping the mouse to candles
+
 function draw() {
   const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
   if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
@@ -359,8 +390,16 @@ function draw() {
   if (!view || !view.d || view.d.error) return;
   const { d, trade } = view, bars = d.bars, N = bars.length;
   const axisW = W < 500 ? 62 : 78, x0 = 8, x1 = W - axisW, yTop = 14, yBot = H - 26;
-  const slot = (x1 - x0) / view.nView, lo = view.yLo, hi = view.yHi;
-  const X = i => x0 + (i + 0.5) * slot, Y = p => yBot - (p - lo) / (hi - lo) * (yBot - yTop);
+  const dLo = view.zoom ? view.zoom.lo : 0, dHi = view.zoom ? view.zoom.hi : view.nView;
+  const slot = (x1 - x0) / (dHi - dLo);
+  const first = Math.max(0, Math.floor(dLo)), last = Math.min(view.shown, N, Math.ceil(dHi) + 1);
+  let lo = view.yLo, hi = view.yHi;
+  if (view.zoom) {   // fit the price axis to what's in view
+    const plan = view.phase === "pre" ? [] : [trade.entry, trade.stop, trade.target].map(p => (p == null || p === "" ? NaN : Number(p)));
+    [lo, hi] = rangeOf(bars.slice(first, Math.max(first + 1, last)), plan);
+  }
+  geom = { x0, x1, dLo, dHi };
+  const X = i => x0 + (i - dLo + 0.5) * slot, Y = p => yBot - (p - lo) / (hi - lo) * (yBot - yTop);
   ctx.font = "12px 'PT Sans', sans-serif";
 
   // grid + price axis
@@ -374,14 +413,19 @@ function draw() {
   // time axis: about one label per 110 px, only under candles already shown
   ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
   const every = Math.max(1, Math.ceil(110 / slot));
-  for (let i = every; i < Math.min(view.shown, N); i += every) {
+  for (let i = Math.max(every, Math.ceil(dLo / every) * every); i < last; i += every) {
+    if (X(i) < x0 + 20) continue;
     if (X(i) > x1 - 20) break;
     ctx.fillStyle = C.axis; ctx.fillText(localLabel(bars[i].t), X(i), H - 8);
   }
 
+  // everything on the chart stays inside the plot area
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x0, 0, x1 - x0, H); ctx.clip();
+
   // candles
   const bw = Math.max(1, slot * 0.64);
-  for (let i = 0; i < Math.min(view.shown, N); i++) {
+  for (let i = first; i < last; i++) {
     const k = bars[i], col = k.c >= k.o ? C.up : C.down;
     ctx.strokeStyle = ctx.fillStyle = col; ctx.lineWidth = Math.max(1, Math.min(1.5, slot * 0.3));
     ctx.beginPath(); ctx.moveTo(X(i), Y(k.h)); ctx.lineTo(X(i), Y(k.l)); ctx.stroke();
@@ -394,24 +438,29 @@ function draw() {
     // where the entry candle will form
     ctx.strokeStyle = C.marker; ctx.setLineDash([4, 4]); ctx.lineWidth = 1.2;
     ctx.beginPath(); ctx.moveTo(ex, yTop); ctx.lineTo(ex, yBot); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = C.marker; ctx.textAlign = "left"; ctx.textBaseline = "top";
-    ctx.fillText("Your entry candle is next", ex + 6, yTop + 2);
+    ctx.fillStyle = C.marker; ctx.textAlign = "right"; ctx.textBaseline = "top";
+    ctx.fillText("Your entry candle is next", ex - 6, yTop + 2);
+    ctx.restore();
     return;
   }
   // entry / stop / target from the entry candle to the axis, each with a price tag on the axis
   const lines = [[trade.target, C.target, "TP", true], [trade.stop, C.stop, "SL", true], [trade.entry, C.entry, "Entry", false]];
+  const tags = [];
   for (const [p, col, name, dashed] of lines) {
     if (p == null || p === "" || isNaN(p)) continue;
     const y = Math.round(Y(+p)) + 0.5;
+    if (y < yTop - 2 || y > yBot + 2) continue;
     ctx.strokeStyle = col; ctx.lineWidth = 1.4; ctx.setLineDash(dashed ? [6, 5] : []);
-    ctx.beginPath(); ctx.moveTo(ex, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.setLineDash([]);
-    tag(name + " " + fmt(+p), x1, y, col, axisW);
+    ctx.beginPath(); ctx.moveTo(Math.max(ex, x0), y); ctx.lineTo(x1, y); ctx.stroke(); ctx.setLineDash([]);
+    if (ex < x1) tags.push([name + " " + fmt(+p), y, col]);
   }
   // exit, once price has got there
   if (view.shown > d.exitIdx && trade.exit != null && trade.exit !== "") {
     const x = X(d.exitIdx), y = Y(+trade.exit);
     ctx.strokeStyle = C.ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.stroke();
   }
+  ctx.restore();
+  for (const [text, y, col] of tags) tag(text, x1, y, col, axisW);
 }
 function tag(text, x, y, col, w) {
   ctx.font = "11px 'PT Sans', sans-serif";
@@ -435,6 +484,7 @@ function playReveal() {
   cancelAnimationFrame(view.anim);
   view.phase = "reveal";
   view.shown = d.entryIdx;
+  view.zoom = null; $("z-reset").hidden = true;   // the replay plays on the whole chart; zoom in again after
   const [lo0, hi0, n0] = [view.yLo, view.yHi, view.nView];
   const [lo1, hi1] = rangeOf(d.bars, [trade.entry, trade.stop, trade.target, trade.exit]);
   const n1 = d.bars.length;
@@ -710,6 +760,7 @@ async function show(i) {
   $("b-unavail").hidden = true;
   $("overlay").hidden = false; $("overlay").textContent = "Loading candles…"; $("src").textContent = "";
   view = null; draw();
+  $("z-reset").hidden = true;
   setButtons(false);
 
   const d = await candlesFor(i);
@@ -851,6 +902,35 @@ document.addEventListener("keydown", e => {
   else if (e.key === "Enter" && $("result").classList.contains("show")) next();
 });
 window.addEventListener("resize", draw);
+
+// zoom: buttons zoom toward the latest candles, the mouse wheel toward the pointer; drag to pan; double-click resets
+const plotAt = clientX => {
+  const r = cv.getBoundingClientRect();
+  return geom ? Math.min(1, Math.max(0, (clientX - r.left - geom.x0) / (geom.x1 - geom.x0))) : 1;
+};
+$("z-in").onclick = () => zoomBy(0.6, 1);
+$("z-out").onclick = () => zoomBy(1 / 0.6, 1);
+$("z-reset").onclick = () => view && setZoom(0, Infinity);
+cv.addEventListener("wheel", e => {
+  if (!view || !view.d || view.d.error) return;
+  e.preventDefault();
+  zoomBy(e.deltaY < 0 ? 0.8 : 1.25, plotAt(e.clientX));
+}, { passive: false });
+cv.addEventListener("dblclick", () => view && view.d && !view.d.error && setZoom(0, Infinity));
+let drag = null;
+cv.addEventListener("pointerdown", e => {
+  if (!view || !view.zoom || !geom) return;
+  drag = { x: e.clientX, lo: view.zoom.lo, hi: view.zoom.hi };
+  cv.setPointerCapture(e.pointerId); cv.classList.add("dragging");
+});
+cv.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const perPx = (drag.hi - drag.lo) / (geom.x1 - geom.x0), shift = (drag.x - e.clientX) * perPx;
+  setZoom(drag.lo + shift, drag.hi + shift);
+});
+const endDrag = () => { drag = null; cv.classList.remove("dragging"); };
+cv.addEventListener("pointerup", endDrag);
+cv.addEventListener("pointercancel", endDrag);
 if (document.fonts) document.fonts.ready.then(draw);
 
 // built-in trades first, then the last pasted block (so a reload resumes), else ask for a paste
