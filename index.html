@@ -83,6 +83,13 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40p
 .fields label{display:grid;gap:4px;font-size:13px;color:var(--muted)}
 .fields input,.fields select{font:inherit;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fff;min-width:220px;max-width:100%}
 .found{font-size:14px}.found:empty,.warn:empty{display:none}
+.daterow{display:flex;gap:8px;flex-wrap:wrap}.fields .daterow input{min-width:0;width:160px}
+.breakdown{padding:0 18px 18px}
+.breakdown h3{font-size:15px;margin:6px 0 8px}
+.breakdown td.num,.breakdown th.num{text-align:right;font-variant-numeric:tabular-nums}
+.breakdown th.grp{text-align:center;border-bottom:none;padding-bottom:0}
+.breakdown td.split{border-left:1px solid var(--line)}
+.pos{color:var(--win)}.neg{color:var(--loss)}
 [hidden]{display:none!important}
 @media (max-width:640px){canvas{height:300px}.meta .coin{font-size:18px}.btns button{flex:1}}
 </style>
@@ -105,7 +112,7 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40p
 <main>
   <section class="card" id="setup" hidden>
     <div class="summary-head">
-      <h2>Replay your last 30 trades</h2>
+      <h2>Replay your trades</h2>
       <div class="sub">Each chart stops on the candle before your entry. You decide whether you'd take the trade again, then watch how it played out.</div>
     </div>
     <div class="setup-body">
@@ -130,6 +137,17 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40p
         <label>Your name <input type="text" id="name" placeholder="First name"></label>
         <label>Journal times are in
           <select id="tz"></select>
+        </label>
+        <label>Trades to review
+          <select id="count">
+            <option value="30">Last 30 trades</option>
+            <option value="60">Last 60 trades</option>
+            <option value="100">Last 100 trades</option>
+            <option value="dates">Between two dates</option>
+          </select>
+        </label>
+        <label id="dates" hidden>From – to
+          <span class="daterow"><input type="date" id="d-from"><input type="date" id="d-to"></span>
         </label>
         <label>Exchange you trade on
           <select id="exch">
@@ -196,6 +214,8 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40p
       <div class="sub" id="sum-sub"></div>
     </div>
     <div class="tiles" id="tiles"></div>
+    <div class="breakdown" id="breakdown"></div>
+    <div class="breakdown"><h3>Every trade</h3></div>
     <div class="tablewrap"><table id="sum-table"></table></div>
     <div class="exports">
       <button class="take" id="x-csv">Export CSV</button>
@@ -655,7 +675,22 @@ function boot(data) {
 
 // Trading Log tab: headers on row 5, trades from row 6; 0-based column indexes
 const COL = { entry_time: 1, tradingview: 4, strategy: 5, coin: 6, direction: 7, entry: 9, stop: 13, target: 14, exit: 17, exit_time: 18, result: 22 };
-const MAX_TRADES = 30;
+// which trades to review: the last 30 / 60 / 100, or every trade entered between two dates (inclusive)
+function selectedTrades() {
+  if (!journal) return [];
+  const pick = $("count").value;
+  if (pick !== "dates") return journal.trades.slice(-Number(pick));
+  const from = $("d-from").value || "0000", to = $("d-to").value || "9999";
+  return journal.trades.filter(t => t.entry_time.slice(0, 10) >= from && t.entry_time.slice(0, 10) <= to);
+}
+function updateFound() {
+  if (!journal) return;
+  const n = journal.trades.length, used = selectedTrades();
+  $("found").textContent = `Found ${n} closed trade${n === 1 ? "" : "s"} on "${journal.sheet}". ` + (used.length
+    ? `You'll replay ${used.length}: ${used[0].entry_time.slice(0, 10)} to ${used[used.length - 1].entry_time.slice(0, 10)}.`
+    : "No trades in those dates: pick other dates.");
+  $("b-start").disabled = !used.length || $("tz-note").textContent.startsWith("Working out");
+}
 let journal = null;   // closed trades read from the file, times still as written in the journal
 
 const pad2 = n => String(n).padStart(2, "0");
@@ -860,7 +895,7 @@ function localOffset(entryTime) {
   return -new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]).getTimezoneOffset() / 60;
 }
 function buildData() {
-  const tz = $("tz").value, picked = journal.trades.slice(-MAX_TRADES);
+  const tz = $("tz").value, picked = selectedTrades();
   return {
     student: $("name").value.trim(), utc_offset: /^-?[\d.]+$/.test(tz) ? Number(tz) : 0, exchange: $("exch").value,
     trades: picked.map((t, i) => Object.assign({ n: i + 1 }, t, { utc_offset: offsetFor(tz, t.entry_time) })),
@@ -874,14 +909,15 @@ async function useJournal(read) {
     journal = await read();
     const n = journal.trades.length;
     if (!n) throw new Error(`No closed trades found on the "${journal.sheet}" tab. Each trade needs an entry date & time (column B), coin (G), Long/Short (H), entry price (J) and exit price (R).`);
-    const used = journal.trades.slice(-MAX_TRADES);
-    $("found").textContent = `Found ${n} closed trade${n === 1 ? "" : "s"} on "${journal.sheet}". You'll replay the last ${used.length}: ` +
-      `${used[0].entry_time.slice(0, 10)} to ${used[used.length - 1].entry_time.slice(0, 10)}.`;
-    // Start waits for the timezone (up to 30 s), so the replay never begins on a guessed one
+    // the date range starts on the 30 most recent trades; Start waits for the timezone (up to 30 s)
+    $("d-from").value = journal.trades.slice(-30)[0].entry_time.slice(0, 10);
+    $("d-to").value = journal.trades[n - 1].entry_time.slice(0, 10);
     const mine = journal;
     $("tz-note").textContent = "Working out your journal's timezone from your trades (takes a few seconds)…";
+    updateFound();
     const timeout = new Promise(res => setTimeout(() => res(null), 30000));
-    const r = await Promise.race([detectOffset(used).catch(() => null), timeout]);
+    // the timezone is the journal's, so check across its last 100 trades, whichever ones get reviewed
+    const r = await Promise.race([detectOffset(journal.trades.slice(-100)).catch(() => null), timeout]);
     if (journal !== mine) return false;
     if (r && r.matches) {
       $("tz").value = r.tz;
@@ -889,7 +925,7 @@ async function useJournal(read) {
     } else {
       $("tz-note").textContent = "Couldn't work out the timezone from your trades. Choose the one your journal times are in.";
     }
-    $("b-start").disabled = false;
+    updateFound();
     return true;
   } catch (err) {
     journal = null; $("found").textContent = "";
@@ -1049,6 +1085,27 @@ function summary() {
     ["Actual result, all reviewed", fmtR(sumR(done)), wl(done)],
     ["Only the trades you'd take again", fmtR(sumR(take)), `${fmtR(sumR(take) - sumR(done))} vs. what you actually made`],
   ].map(([k, v, d]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d}</div></div>`).join("");
+
+  // the same split by strategy and by direction: for each group, the trades you'd take again next to the ones you wouldn't
+  const cells = a => {
+    const r = sumR(a), w = a.filter(x => x.result === "WIN").length, l = a.filter(x => x.result === "LOSS").length;
+    return a.length
+      ? `<td class="num split">${a.length}</td><td class="num">${w} / ${l}</td><td class="num ${r > 0 ? "pos" : r < 0 ? "neg" : ""}">${fmtR(r)}</td>`
+      : `<td class="num split">0</td><td class="num">-</td><td class="num">-</td>`;
+  };
+  const table = (title, label, keyOf) => {
+    const groups = [...new Set(done.map(keyOf))].sort();
+    const head = `<tr><th></th><th class="grp" colspan="3">Take again</th><th class="grp" colspan="3">Wouldn't take again</th></tr>` +
+      `<tr><th>${label}</th>` + `<th class="num">Trades</th><th class="num">Won / lost</th><th class="num">R</th>`.repeat(2) + `</tr>`;
+    const body = groups.map(g => {
+      const inG = done.filter(r => keyOf(r) === g);
+      return `<tr><td>${esc(g)}</td>${cells(inG.filter(r => r.decision === "take again"))}${cells(inG.filter(r => r.decision === "wouldn't take"))}</tr>`;
+    }).join("");
+    return `<h3>${title}</h3><div class="tablewrap" style="padding:0"><table>${head}${body}</table></div>`;
+  };
+  $("breakdown").innerHTML = done.length
+    ? table("By strategy", "Strategy", r => r.strategy || "No strategy tag") + table("By direction", "Direction", r => r.direction || "-")
+    : "";
   $("sum-table").innerHTML = "<tr><th>#</th><th>Coin</th><th>Side</th><th>Strategy</th><th>Entry time</th><th>Your call</th><th>Result</th></tr>" +
     rs.map(r => `<tr><td>${r.n}</td><td>${esc(r.coin)}</td><td>${esc(r.direction)}</td><td>${esc(r.strategy)}</td><td>${esc(r.entry_time)}</td>` +
       `<td>${r.decision || "-"}</td><td class="r ${r.result || ""}">${r.decision ? (r.result || "-") + " " + fmtR(r.r) : "hidden"}</td></tr>`).join("");
@@ -1095,6 +1152,8 @@ $("b-start").onclick = () => {
 };
 $("file").onchange = e => loadFile(e.target.files[0]);
 $("link-form").onsubmit = loadLink;
+$("count").onchange = () => { $("dates").hidden = $("count").value !== "dates"; updateFound(); };
+$("d-from").onchange = $("d-to").onchange = updateFound;
 const drop = $("drop");
 drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
 drop.addEventListener("dragleave", () => drop.classList.remove("over"));
