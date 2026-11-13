@@ -83,6 +83,11 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40p
 .fields label{display:grid;gap:4px;font-size:13px;color:var(--muted)}
 .fields input,.fields select{font:inherit;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fff;min-width:220px;max-width:100%}
 .found{font-size:14px}.found:empty,.warn:empty{display:none}
+.notes{padding:14px 18px;border-top:1px solid var(--line);display:grid;gap:6px}
+.notes label{font-weight:700;font-size:14px}.notes label span{font-weight:400;color:var(--muted);font-size:12px;margin-left:6px}
+.notes textarea{width:100%;font:inherit;font-size:14px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;resize:vertical}
+.notes textarea:focus{outline:none;border-color:var(--teal)}
+td.note{white-space:normal;max-width:280px;color:var(--muted)}
 .daterow{display:flex;gap:8px;flex-wrap:wrap}.fields .daterow input{min-width:0;width:160px}
 .breakdown{padding:0 18px 18px}
 .breakdown h3{font-size:15px;margin:6px 0 8px}
@@ -201,6 +206,10 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px 16px 40p
         <button class="ghost" id="b-replay">Replay the trade</button>
         <button class="take" id="b-next">Next trade<span class="kbd">Enter</span></button>
       </div>
+    </div>
+    <div class="notes">
+      <label for="note">Your notes on this trade <span>optional · saved as you type</span></label>
+      <textarea id="note" rows="3" placeholder="What do you see now that you didn't then? What would you do differently?"></textarea>
     </div>
     <div class="nav" style="padding:0 18px 14px">
       <button class="ghost" id="b-prev">← Previous</button>
@@ -664,6 +673,7 @@ function boot(data) {
   KEY = "zct-replay:" + (DATA.student || "") + ":" + TRADES.map(t => t.entry_time).join("|").slice(0, 200);
   try { store = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { store = {}; }
   store.decisions = store.decisions || {};
+  store.notes = store.notes || {};
   cache = {};
   $("who").textContent = DATA.student || "";
   $("setup").hidden = true;
@@ -972,6 +982,7 @@ async function show(i) {
   $("m-when").textContent = em ? localLabel(em, true, offOf(t)) : t.entry_time;
   utcNote(t);
   $("result").classList.remove("show");
+  $("note").value = store.notes[i] || "";
   $("decide").style.display = dec ? "none" : "";
   $("b-prev").disabled = i === 0;
   $("b-unavail").hidden = true;
@@ -1067,7 +1078,8 @@ function rows() {
     const d = store.decisions[i];
     return { n: i + 1, coin: base(t.coin), direction: t.direction, strategy: t.strategy || "", entry_time: t.entry_time,
       entry: t.entry, stop: t.stop, target: t.target, exit: t.exit, level: t.level || "", r: rOf(t), result: resultOf(t),
-      decision: d ? (d.unavailable ? "chart unavailable" : d.take ? "take again" : "wouldn't take") : "", decided_at: d ? d.at : "" };
+      decision: d ? (d.unavailable ? "chart unavailable" : d.take ? "take again" : "wouldn't take") : "", decided_at: d ? d.at : "",
+      notes: store.notes[i] || "" };
   });
 }
 function summary() {
@@ -1106,9 +1118,10 @@ function summary() {
   $("breakdown").innerHTML = done.length
     ? table("By strategy", "Strategy", r => r.strategy || "No strategy tag") + table("By direction", "Direction", r => r.direction || "-")
     : "";
-  $("sum-table").innerHTML = "<tr><th>#</th><th>Coin</th><th>Side</th><th>Strategy</th><th>Entry time</th><th>Your call</th><th>Result</th></tr>" +
+  $("sum-table").innerHTML = "<tr><th>#</th><th>Coin</th><th>Side</th><th>Strategy</th><th>Entry time</th><th>Your call</th><th>Result</th><th>Your notes</th></tr>" +
     rs.map(r => `<tr><td>${r.n}</td><td>${esc(r.coin)}</td><td>${esc(r.direction)}</td><td>${esc(r.strategy)}</td><td>${esc(r.entry_time)}</td>` +
-      `<td>${r.decision || "-"}</td><td class="r ${r.result || ""}">${r.decision ? (r.result || "-") + " " + fmtR(r.r) : "hidden"}</td></tr>`).join("");
+      `<td>${r.decision || "-"}</td><td class="r ${r.result || ""}">${r.decision ? (r.result || "-") + " " + fmtR(r.r) : "hidden"}</td>` +
+      `<td class="note">${esc(r.notes)}</td></tr>`).join("");
 }
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 function download(name, text, type) {
@@ -1138,10 +1151,11 @@ $("to-setup").onclick = showSetup;
 // clear this journal's answers and go back to trade 1 (loaded candles are kept, so it's instant)
 function restart() {
   if (!TRADES || !confirm("Clear all your answers for these trades and start again from trade 1?")) return;
-  store = { decisions: {}, current: 0 };
+  store = { decisions: {}, notes: {}, current: 0 };
   save(); stats(); show(0);
 }
 $("restart").onclick = restart;
+$("note").addEventListener("input", e => { if (!store) return; store.notes[cur] = e.target.value; save(); });
 $("restart-2").onclick = restart;
 $("b-sample").onclick = () => boot(SAMPLE);
 $("b-start").onclick = () => {
