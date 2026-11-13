@@ -27,7 +27,7 @@ main{max-width:1040px;margin:0 auto;padding:18px 16px 40px}
 .pill.strat{color:var(--ink);background:#f1f3f3}
 .meta .when{color:var(--muted);font-size:13px}
 .chartwrap{position:relative;background:#fff}
-canvas{display:block;width:100%;height:420px;touch-action:pan-y;cursor:grab}
+canvas{display:block;width:100%;height:500px;touch-action:pan-y;cursor:grab}
 canvas.dragging{cursor:grabbing}
 .zoombar{position:absolute;left:14px;top:10px;display:flex;gap:6px}
 .zoombar button{padding:4px 10px;font-size:15px;line-height:1.2;background:rgba(255,255,255,.92)}
@@ -96,7 +96,7 @@ td.note{white-space:normal;max-width:280px;color:var(--muted)}
 .breakdown td.split{border-left:1px solid var(--line)}
 .pos{color:var(--win)}.neg{color:var(--loss)}
 [hidden]{display:none!important}
-@media (max-width:640px){canvas{height:300px}.meta .coin{font-size:18px}.btns button{flex:1}}
+@media (max-width:640px){canvas{height:360px}.meta .coin{font-size:18px}.btns button{flex:1}}
 </style>
 </head>
 <body>
@@ -318,22 +318,23 @@ async function getJSON(url, opts, attempt = 0) {
 // tfMin is 1, 5, 15, 30, 60 or 1440 (daily, UTC days); iv() spells it the way each exchange wants
 const iv = (tf, m, h, d) => (tf === 1440 ? d : tf === 60 ? h : tf + m);
 const SOURCES = [
-  { name: "Binance", chunk: 1500, get: async (b, tf, s, e) =>
+  // vi = where each exchange puts the candle's volume in quote currency (USDT), so volume is in dollars everywhere
+  { name: "Binance", chunk: 1500, vi: 7, get: async (b, tf, s, e) =>
       (await getJSON(`https://fapi.binance.com/fapi/v1/klines?symbol=${b}USDT&interval=${iv(tf, "m", "1h", "1d")}&startTime=${s}&endTime=${e}&limit=1500`)) },
-  { name: "Bybit", chunk: 1000, get: async (b, tf, s, e) =>
+  { name: "Bybit", chunk: 1000, vi: 6, get: async (b, tf, s, e) =>
       (await getJSON(`https://api.bybit.com/v5/market/kline?category=linear&symbol=${b}USDT&interval=${iv(tf, "", "60", "D")}&start=${s}&end=${e}&limit=1000`)).result.list },
-  { name: "Bitget", chunk: 200, maxSpanMs: 90 * 864e5, get: async (b, tf, s, e) =>
+  { name: "Bitget", chunk: 200, vi: 6, maxSpanMs: 90 * 864e5, get: async (b, tf, s, e) =>
       // Bitget returns a candle only once it has closed by endTime, so end at the last candle's close
       (await getJSON(`https://api.bitget.com/api/v2/mix/market/history-candles?symbol=${b}USDT&productType=usdt-futures&granularity=${iv(tf, "m", "1H", "1Dutc")}&startTime=${s}&endTime=${e + tf * 6e4}&limit=200`)).data },
-  { name: "OKX", chunk: 100, get: async (b, tf, s, e) =>
+  { name: "OKX", chunk: 100, vi: 7, get: async (b, tf, s, e) =>
       (await getJSON(`https://www.okx.com/api/v5/market/history-candles?instId=${b}-USDT-SWAP&bar=${iv(tf, "m", "1H", "1Dutc")}&after=${e + 1}&before=${s - 1}&limit=100`)).data },
-  { name: "Gate", chunk: 1000, get: async (b, tf, s, e) =>
+  { name: "Gate", chunk: 1000, vi: 5, get: async (b, tf, s, e) =>
       (await getJSON(`https://api.gateio.ws/api/v4/futures/usdt/candlesticks?contract=${b}_USDT&interval=${iv(tf, "m", "1h", "1d")}&from=${s / 1000}&to=${e / 1000}`))
-        .map(k => [k.t * 1000, k.o, k.h, k.l, k.c]) },
-  { name: "Hyperliquid", chunk: 5000, get: async (b, tf, s, e) =>
+        .map(k => [k.t * 1000, k.o, k.h, k.l, k.c, k.sum]) },
+  { name: "Hyperliquid", chunk: 5000, vi: 5, get: async (b, tf, s, e) =>
       (await getJSON("https://api.hyperliquid.xyz/info", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "candleSnapshot", req: { coin: b, interval: iv(tf, "m", "1h", "1d"), startTime: s, endTime: e } }) }))
-        .map(k => [k.t, k.o, k.h, k.l, k.c]) },
+        .map(k => [k.t, k.o, k.h, k.l, k.c, k.v * k.c]) },
 ];
 
 // exchanges in the order to try: the student's own first (their prices and levels match their charts exactly)
@@ -356,7 +357,7 @@ async function loadFrom(src, b, tf, s, e) {
   for (const rows of all) {
     for (const k of rows || []) {
       const t = +k[0];
-      if (t >= s && t <= e) bars.set(t, { t, o: +k[1], h: +k[2], l: +k[3], c: +k[4] });
+      if (t >= s && t <= e) bars.set(t, { t, o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[src.vi] || 0 });
     }
   }
   return [...bars.values()].sort((a, z) => a.t - z.t);
@@ -530,6 +531,8 @@ function draw() {
   if (!view || !view.d || view.d.error) return;
   const { d, trade } = view, bars = d.bars, N = bars.length;
   const axisW = W < 500 ? 62 : 78, x0 = 8, x1 = W - axisW, yTop = 14, yBot = H - 26;
+  // price pane on top, volume pane (about a fifth of the height) under it
+  const vH = Math.round((yBot - yTop) * 0.2), vTop = yBot - vH, pBot = vTop - 12;
   const dLo = view.zoom ? view.zoom.lo : 0, dHi = view.zoom ? view.zoom.hi : view.nView;
   const slot = (x1 - x0) / (dHi - dLo);
   const first = Math.max(0, Math.floor(dLo)), last = Math.min(view.shown, N, Math.ceil(dHi) + 1);
@@ -539,7 +542,7 @@ function draw() {
     [lo, hi] = rangeOf(bars.slice(first, Math.max(first + 1, last)), plan);
   }
   geom = { x0, x1, dLo, dHi };
-  const X = i => x0 + (i - dLo + 0.5) * slot, Y = p => yBot - (p - lo) / (hi - lo) * (yBot - yTop);
+  const X = i => x0 + (i - dLo + 0.5) * slot, Y = p => pBot - (p - lo) / (hi - lo) * (pBot - yTop);
   ctx.font = "12px 'PT Sans', sans-serif";
 
   // grid + price axis
@@ -573,11 +576,25 @@ function draw() {
     ctx.fillRect(X(i) - bw / 2, top, bw, Math.max(1, bot - top));
   }
 
+  // volume in USD, coloured like its candle and scaled to the tallest bar in view (only candles already shown,
+  // so before the decision it says nothing about what comes next)
+  let vMax = 0;
+  for (let i = first; i < last; i++) vMax = Math.max(vMax, bars[i].v || 0);
+  if (vMax > 0) {
+    ctx.strokeStyle = C.grid; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x0, vTop - 6.5); ctx.lineTo(x1, vTop - 6.5); ctx.stroke();
+    for (let i = first; i < last; i++) {
+      const k = bars[i], h = (k.v || 0) / vMax * vH;
+      ctx.fillStyle = k.c >= k.o ? "rgba(38, 166, 154, 0.55)" : "rgba(239, 83, 80, 0.55)";
+      ctx.fillRect(X(i) - bw / 2, yBot - h, bw, Math.max(h, 0.5));
+    }
+  }
+
   const ex = X(d.entryIdx) - slot / 2, tags = [];
   // the systematic level the trade was taken at: plain grey like a TradingView line, from the candle that made it
   for (const lv of d.levels || []) {
     const y = Math.round(Y(lv.price)) + 0.5;
-    if (y < yTop - 2 || y > yBot + 2) continue;
+    if (y < yTop - 2 || y > pBot + 2) continue;
     const xa = lv.idx >= 0 ? Math.max(x0, X(lv.idx)) : x0;
     ctx.strokeStyle = C.level; ctx.lineWidth = 1.4;
     ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(x1, y); ctx.stroke();
@@ -592,7 +609,8 @@ function draw() {
     ctx.fillStyle = C.marker; ctx.textAlign = "right"; ctx.textBaseline = "top";
     ctx.fillText("Your entry candle is next", ex - 6, yTop + 2);
     ctx.restore();
-    drawTags(tags, x1, axisW, yTop, yBot);
+    drawTags(tags, x1, axisW, yTop, pBot);
+    volAxis(vMax, x1, vTop);
     return;
   }
   // entry / stop / target from the entry candle to the axis, each with a price tag on the axis
@@ -600,7 +618,7 @@ function draw() {
   for (const [p, col, name, dashed] of lines) {
     if (p == null || p === "" || isNaN(p)) continue;
     const y = Math.round(Y(onChart(p, d))) + 0.5;   // drawn where the plan sits on these candles; the tag keeps the journal's price
-    if (y < yTop - 2 || y > yBot + 2) continue;
+    if (y < yTop - 2 || y > pBot + 2) continue;
     ctx.strokeStyle = col; ctx.lineWidth = 1.4; ctx.setLineDash(dashed ? [6, 5] : []);
     ctx.beginPath(); ctx.moveTo(Math.max(ex, x0), y); ctx.lineTo(x1, y); ctx.stroke(); ctx.setLineDash([]);
     if (ex < x1) tags.push([name + " " + fmt(+p), y, col]);
@@ -613,7 +631,16 @@ function draw() {
     ring(X(d.exitIdx), Y(onChart(trade.exit, d)), res === "WIN" ? "#1e9e6a" : res === "LOSS" ? "#d63a2f" : C.axis);
   }
   ctx.restore();
-  drawTags(tags, x1, axisW, yTop, yBot);
+  drawTags(tags, x1, axisW, yTop, pBot);
+  volAxis(vMax, x1, vTop);
+}
+// the volume pane's label and scale on the axis: "Vol $" and the tallest bar's value, e.g. "1.2M"
+function volAxis(vMax, x1, vTop) {
+  if (!(vMax > 0)) return;
+  const short = v => (v >= 1e9 ? (v / 1e9).toFixed(1) + "B" : v >= 1e6 ? (v / 1e6).toFixed(1) + "M" : v >= 1e3 ? (v / 1e3).toFixed(0) + "K" : v.toFixed(0));
+  ctx.font = "11px 'PT Sans', sans-serif"; ctx.fillStyle = C.axis; ctx.textAlign = "left"; ctx.textBaseline = "top";
+  ctx.fillText("Vol $" + short(vMax), x1 + 6, vTop - 2);
+  ctx.font = "12px 'PT Sans', sans-serif";
 }
 // price tags on the axis, nudged apart when two prices sit close together (e.g. an entry right at the level)
 function drawTags(tags, x1, axisW, yTop, yBot) {
